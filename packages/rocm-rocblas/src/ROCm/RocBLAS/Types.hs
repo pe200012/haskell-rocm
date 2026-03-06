@@ -11,6 +11,10 @@ module ROCm.RocBLAS.Types
   , RocblasFill(..)
   , pattern RocblasFillUpper
   , pattern RocblasFillLower
+  , RocblasEvect(..)
+  , pattern RocblasEvectOriginal
+  , pattern RocblasEvectTridiagonal
+  , pattern RocblasEvectNone
   , RocblasOperation(..)
   , pattern RocblasOperationNone
   , pattern RocblasOperationTranspose
@@ -43,6 +47,18 @@ pattern RocblasFillUpper = RocblasFill 121
 
 pattern RocblasFillLower :: RocblasFill
 pattern RocblasFillLower = RocblasFill 122
+
+newtype RocblasEvect = RocblasEvect {unRocblasEvect :: CInt}
+  deriving newtype (Eq, Ord, Show)
+
+pattern RocblasEvectOriginal :: RocblasEvect
+pattern RocblasEvectOriginal = RocblasEvect 211
+
+pattern RocblasEvectTridiagonal :: RocblasEvect
+pattern RocblasEvectTridiagonal = RocblasEvect 212
+
+pattern RocblasEvectNone :: RocblasEvect
+pattern RocblasEvectNone = RocblasEvect 213
 
 newtype RocblasOperation = RocblasOperation {unRocblasOperation :: CInt}
   deriving newtype (Eq, Ord, Show)

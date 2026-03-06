@@ -13,6 +13,8 @@ module ROCm.RocSOLVER
   , rocsolverDgeqrf
   , rocsolverSorgqr
   , rocsolverDorgqr
+  , rocsolverSsyev
+  , rocsolverDsyev
   ) where
 
 import Control.Monad (when)
@@ -22,7 +24,7 @@ import ROCm.FFI.Core.Exception (throwArgumentError)
 import ROCm.FFI.Core.Types (DevicePtr(..), RocblasHandle(..))
 import ROCm.RocBLAS.C.Types (RocblasInt)
 import ROCm.RocBLAS.Error (checkRocblas)
-import ROCm.RocBLAS.Types (RocblasFill, RocblasOperation)
+import ROCm.RocBLAS.Types (RocblasEvect, RocblasFill, RocblasOperation)
 import ROCm.RocSOLVER.Raw
   ( c_rocsolver_dgeqrf
   , c_rocsolver_dgesv
@@ -31,6 +33,7 @@ import ROCm.RocSOLVER.Raw
   , c_rocsolver_dorgqr
   , c_rocsolver_dposv
   , c_rocsolver_dpotrf
+  , c_rocsolver_dsyev
   , c_rocsolver_sgeqrf
   , c_rocsolver_sgesv
   , c_rocsolver_sgetrf
@@ -38,6 +41,7 @@ import ROCm.RocSOLVER.Raw
   , c_rocsolver_sorgqr
   , c_rocsolver_sposv
   , c_rocsolver_spotrf
+  , c_rocsolver_ssyev
   )
 
 rocsolverSpotrf ::
@@ -279,3 +283,37 @@ rocsolverDorgqr (RocblasHandle h) m n k (DevicePtr a) lda (DevicePtr tau) = do
   when (k < 0 || k > n) $ throwArgumentError "rocsolverDorgqr" "k must satisfy 0 <= k <= n"
   when (lda < max 1 m) $ throwArgumentError "rocsolverDorgqr" "lda must be >= max 1 m"
   checkRocblas "rocsolver_dorgqr" =<< c_rocsolver_dorgqr h m n k a lda tau
+
+rocsolverSsyev ::
+  HasCallStack =>
+  RocblasHandle ->
+  RocblasEvect ->
+  RocblasFill ->
+  RocblasInt ->
+  DevicePtr CFloat ->
+  RocblasInt ->
+  DevicePtr CFloat ->
+  DevicePtr CFloat ->
+  DevicePtr RocblasInt ->
+  IO ()
+rocsolverSsyev (RocblasHandle h) evect uplo n (DevicePtr a) lda (DevicePtr d) (DevicePtr e) (DevicePtr info) = do
+  when (n < 0) $ throwArgumentError "rocsolverSsyev" "n must be >= 0"
+  when (lda < max 1 n) $ throwArgumentError "rocsolverSsyev" "lda must be >= max 1 n"
+  checkRocblas "rocsolver_ssyev" =<< c_rocsolver_ssyev h evect uplo n a lda d e info
+
+rocsolverDsyev ::
+  HasCallStack =>
+  RocblasHandle ->
+  RocblasEvect ->
+  RocblasFill ->
+  RocblasInt ->
+  DevicePtr CDouble ->
+  RocblasInt ->
+  DevicePtr CDouble ->
+  DevicePtr CDouble ->
+  DevicePtr RocblasInt ->
+  IO ()
+rocsolverDsyev (RocblasHandle h) evect uplo n (DevicePtr a) lda (DevicePtr d) (DevicePtr e) (DevicePtr info) = do
+  when (n < 0) $ throwArgumentError "rocsolverDsyev" "n must be >= 0"
+  when (lda < max 1 n) $ throwArgumentError "rocsolverDsyev" "lda must be >= max 1 n"
+  checkRocblas "rocsolver_dsyev" =<< c_rocsolver_dsyev h evect uplo n a lda d e info

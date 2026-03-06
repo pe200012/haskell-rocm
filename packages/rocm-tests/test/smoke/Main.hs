@@ -47,6 +47,7 @@ import ROCm.HIP
   )
 import ROCm.RocBLAS
   ( RocblasInt
+  , pattern RocblasEvectOriginal
   , pattern RocblasFillLower
   , pattern RocblasOperationNone
   , rocblasDgemm
@@ -100,6 +101,7 @@ import ROCm.RocSOLVER
   , rocsolverSgesv
   , rocsolverSorgqr
   , rocsolverSposv
+  , rocsolverSsyev
   )
 
 data SmokeResult
@@ -122,6 +124,7 @@ main = do
       , ("rocsolver-sposv", rocsolverSposvSmoke)
       , ("rocsolver-sgesv", rocsolverSgesvSmoke)
       , ("rocsolver-sgeqrf-orgqr", rocsolverSgeqrfOrgqrSmoke)
+      , ("rocsolver-ssyev", rocsolverSsyevSmoke)
       , ("rocblas-saxpy", rocblasSmoke)
       , ("rocblas-sgemv", rocblasGemvSmoke)
       , ("rocblas-dgemv", rocblasDGemvSmoke)
@@ -886,6 +889,71 @@ rocsolverSgeqrfOrgqrSmoke = do
                   then pure SmokePassed
                   else fail ("rocSOLVER SGEQRF/ORGQR mismatch: recon=" <> show recon <> ", qtq=" <> show qtq <> ", r=" <> show rVals)
 
+rocsolverSsyevSmoke :: IO SmokeResult
+rocsolverSsyevSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let n = 2 :: Int
+              aOriginal = fmap CFloat [2, 1, 1, 2]
+              expectedVals = fmap CFloat [1, 3]
+              identity2 = fmap CFloat [1, 0, 0, 1]
+              bytesA = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesD = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesE = fromIntegral ((n - 1) * sizeOf (undefined :: CFloat)) :: CSize
+              bytesInfo = fromIntegral (sizeOf (undefined :: RocblasInt)) :: CSize
+
+          bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray n :: IO (Ptr CFloat)) free $ \hD ->
+              bracket (mallocArray 1 :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                pokeArray hA aOriginal
+
+                bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                  bracket (hipMallocBytes bytesD :: IO (DevicePtr CFloat)) hipFree $ \dD ->
+                    bracket (hipMallocBytes bytesE :: IO (DevicePtr CFloat)) hipFree $ \dE ->
+                      bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                        hipMemcpyH2D dA (HostPtr hA) bytesA
+
+                        bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                          withRocblasHandle $ \handle -> do
+                            rocblasSetStream handle stream
+                            rocsolverSsyev
+                              handle
+                              RocblasEvectOriginal
+                              RocblasFillLower
+                              (fromIntegral n :: RocblasInt)
+                              dA
+                              (fromIntegral n :: RocblasInt)
+                              dD
+                              dE
+                              dInfo
+                            hipStreamSynchronize stream
+
+                        hipMemcpyD2H (HostPtr hA) dA bytesA
+                        hipMemcpyD2H (HostPtr hD) dD bytesD
+                        hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                vectors <- peekArray (n * n) hA
+                eigenVals <- peekArray n hD
+                infoVals <- peekArray 1 hInfo
+                let infoOk = case infoVals of
+                      [infoVal] -> infoVal == 0
+                      _ -> False
+                    lhs = matMulColMajorCFloat n n n aOriginal vectors
+                    rhs = matMulColMajorCFloat n n n vectors (diagColMajorCFloat eigenVals)
+                    gram = gramMatrixColMajorCFloat n n vectors
+                if infoOk
+                    && approxVecWithTol 1.0e-3 eigenVals expectedVals
+                    && approxVecWithTol 1.0e-3 lhs rhs
+                    && approxVecWithTol 1.0e-3 gram identity2
+                  then pure SmokePassed
+                  else fail ("rocSOLVER SSYEV mismatch: eigenVals=" <> show eigenVals <> ", lhs=" <> show lhs <> ", rhs=" <> show rhs <> ", gram=" <> show gram <> ", info=" <> show infoVals)
+
 rocblasSmoke :: IO SmokeResult
 rocblasSmoke = do
   gpuReady <- requireGpu
@@ -1112,6 +1180,15 @@ gramMatrixColMajorCFloat m n q =
   | j <- [0 .. n - 1]
   , i <- [0 .. n - 1]
   ]
+
+diagColMajorCFloat :: [CFloat] -> [CFloat]
+diagColMajorCFloat vals =
+  [ if row == col then vals !! row else CFloat 0
+  | col <- [0 .. n - 1]
+  , row <- [0 .. n - 1]
+  ]
+  where
+    n = length vals
 
 indexColMajor :: Int -> [a] -> Int -> Int -> a
 indexColMajor rows vals row col = vals !! (row + col * rows)
