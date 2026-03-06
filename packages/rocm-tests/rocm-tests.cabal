@@ -1,0 +1,39 @@
+cabal-version:      3.0
+name:               rocm-tests
+version:            0.1.0.0
+synopsis:           Smoke tests for haskell-rocm
+category:           Foreign
+license:            BSD-3-Clause
+author:             haskell-rocm contributors
+maintainer:         haskell-rocm contributors
+build-type:         Simple
+
+test-suite smoke
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   test/smoke
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocfft
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+test-suite unit
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   test/unit
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocfft
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N

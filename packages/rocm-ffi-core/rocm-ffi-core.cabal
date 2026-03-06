@@ -1,0 +1,23 @@
+cabal-version:      3.0
+name:               rocm-ffi-core
+version:            0.1.0.0
+synopsis:           Shared types for ROCm low-level FFI bindings
+category:           Foreign
+license:            BSD-3-Clause
+author:             haskell-rocm contributors
+maintainer:         haskell-rocm contributors
+build-type:         Simple
+
+library
+  exposed-modules:
+      ROCm.FFI.Core.Types
+      ROCm.FFI.Core.Exception
+
+  hs-source-dirs:
+      src
+
+  build-depends:
+      base >=4.18 && <5
+
+  default-language: GHC2021
+  ghc-options:      -Wall

@@ -1,0 +1,31 @@
+cabal-version:      3.0
+name:               rocm-rocblas
+version:            0.1.0.0
+synopsis:           Low-level FFI bindings to rocBLAS (C API)
+category:           Foreign
+license:            BSD-3-Clause
+author:             haskell-rocm contributors
+maintainer:         haskell-rocm contributors
+build-type:         Simple
+
+library
+  exposed-modules:
+      ROCm.RocBLAS
+      ROCm.RocBLAS.Types
+      ROCm.RocBLAS.C.Types
+      ROCm.RocBLAS.Raw
+      ROCm.RocBLAS.Error
+
+  hs-source-dirs:
+      src
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  extra-libraries:
+      rocblas
+
+  default-language: GHC2021
+  ghc-options:      -Wall

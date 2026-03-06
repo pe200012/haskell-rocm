@@ -1,0 +1,597 @@
+{-# LANGUAGE PatternSynonyms #-}
+
+module Main (main) where
+
+import Control.Exception (SomeException, bracket, displayException, try)
+import Control.Monad (forM)
+import Data.Char (isSpace)
+import Data.Complex (Complex((:+)))
+import Data.List (isPrefixOf)
+import Foreign.C.Types (CDouble(..), CFloat(..), CSize)
+import Foreign.Marshal.Alloc (free)
+import Foreign.Marshal.Array (mallocArray, peekArray, pokeArray)
+import Foreign.Ptr (Ptr, castPtr)
+import Foreign.Storable (sizeOf)
+import System.Environment (lookupEnv)
+import System.Exit (exitFailure, exitSuccess)
+import System.Process (readProcess)
+
+import ROCm.FFI.Core.Types (DevicePtr(..), HostPtr(..), PinnedHostPtr(..))
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import ROCm.HIP
+  ( hipEventCreate
+  , hipEventDestroy
+  , hipEventElapsedTime
+  , hipEventQuery
+  , hipEventRecord
+  , hipEventSynchronize
+  , hipFree
+  , hipGetDeviceCount
+  , hipHostFree
+  , hipHostMallocBytes
+  , hipHostMallocBytesWithFlags
+  , hipMallocBytes
+  , hipMemcpyD2H
+  , hipMemcpyD2HAsync
+  , hipMemcpyH2D
+  , hipMemcpyH2DAsync
+  , hipMemcpyH2DWithStream
+  , hipStreamAddCallback
+  , hipStreamCreate
+  , hipStreamDestroy
+  , hipStreamSynchronize
+  , pattern HipHostMallocPortable
+  , pattern HipSuccess
+  )
+import ROCm.RocBLAS
+  ( RocblasInt
+  , pattern RocblasOperationNone
+  , rocblasDgemm
+  , rocblasSaxpy
+  , rocblasSetStream
+  , rocblasSgemm
+  , withRocblasHandle
+  )
+import ROCm.RocFFT
+  ( rocfftExecute
+  , rocfftExecutionInfoSetStream
+  , rocfftExecutionInfoSetWorkBuffer
+  , rocfftPlanCreate
+  , rocfftPlanDescriptionSetDataLayout
+  , rocfftPlanGetWorkBufferSize
+  , withRocfft
+  , withRocfftExecutionInfo
+  , withRocfftPlan
+  , withRocfftPlanDescription
+  , pattern RocfftArrayTypeComplexInterleaved
+  , pattern RocfftPlacementInplace
+  , pattern RocfftPlacementNotInplace
+  , pattern RocfftPrecisionSingle
+  , pattern RocfftTransformTypeComplexForward
+  , pattern RocfftTransformTypeComplexInverse
+  )
+
+data SmokeResult
+  = SmokePassed
+  | SmokeSkipped String
+
+main :: IO ()
+main = do
+  results <-
+    forM
+      [ ("hip-memcpy-roundtrip", hipMemcpySmoke)
+      , ("hip-async-pinned-event", hipAsyncPinnedEventSmoke)
+      , ("hip-stream-callback", hipStreamCallbackSmoke)
+      , ("hip-event-query-timing", hipEventQueryTimingSmoke)
+      , ("rocfft-c2c-1d", rocfftSmoke)
+      , ("rocfft-batched-notinplace", rocfftBatchedNotInplaceSmoke)
+      , ("rocblas-saxpy", rocblasSmoke)
+      , ("rocblas-sgemm", rocblasGemmSmoke)
+      , ("rocblas-dgemm", rocblasDGemmSmoke)
+      ]
+      $ \(name, action) -> do
+        outcome <- try action :: IO (Either SomeException SmokeResult)
+        case outcome of
+          Left e -> do
+            putStrLn ("FAIL  " <> name <> ": " <> sanitize (displayException e))
+            pure False
+          Right SmokePassed -> do
+            putStrLn ("PASS  " <> name)
+            pure True
+          Right (SmokeSkipped reason) -> do
+            putStrLn ("SKIP  " <> name <> ": " <> reason)
+            pure True
+
+  if and results
+    then exitSuccess
+    else exitFailure
+
+hipMemcpySmoke :: IO SmokeResult
+hipMemcpySmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      let n = 16 :: Int
+          input = fromIntegral <$> [0 .. n - 1] :: [Int]
+          bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+          inputC = fmap (CFloat . fromIntegral) input
+
+      bracket (mallocArray n) free $ \hIn ->
+        bracket (mallocArray n) free $ \hOut -> do
+          pokeArray hIn inputC
+
+          bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dBuf -> do
+            hipMemcpyH2D dBuf (HostPtr hIn) bytes
+            hipMemcpyD2H (HostPtr hOut) dBuf bytes
+
+          output <- peekArray n hOut
+          if output == inputC
+            then pure SmokePassed
+            else fail ("hipMemcpy mismatch: expected=" <> show inputC <> ", got=" <> show output)
+
+hipAsyncPinnedEventSmoke :: IO SmokeResult
+hipAsyncPinnedEventSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      let n = 16 :: Int
+          input = fmap (CFloat . fromIntegral) [0 .. n - 1]
+          bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+
+      bracket (hipHostMallocBytes bytes :: IO (PinnedHostPtr CFloat)) hipHostFree $ \hIn ->
+        bracket (hipHostMallocBytes bytes :: IO (PinnedHostPtr CFloat)) hipHostFree $ \hOut ->
+          bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dBuf ->
+            bracket hipStreamCreate hipStreamDestroy $ \stream ->
+              bracket hipEventCreate hipEventDestroy $ \ev -> do
+                let PinnedHostPtr pIn = hIn
+                    PinnedHostPtr pOut = hOut
+                pokeArray pIn input
+                hipMemcpyH2DAsync dBuf hIn bytes stream
+                hipMemcpyD2HAsync hOut dBuf bytes stream
+                hipEventRecord ev stream
+                hipEventSynchronize ev
+                output <- peekArray n pOut
+                if output == input
+                  then pure SmokePassed
+                  else fail ("hip async pinned/event mismatch: expected=" <> show input <> ", got=" <> show output)
+
+hipStreamCallbackSmoke :: IO SmokeResult
+hipStreamCallbackSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      let n = 16 :: Int
+          input = fmap (CFloat . fromIntegral) [0 .. n - 1]
+          bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+
+      bracket (mallocArray n) free $ \hIn ->
+        bracket (mallocArray n) free $ \hOut -> do
+          pokeArray hIn input
+          cbMVar <- newEmptyMVar
+
+          bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dBuf ->
+            bracket hipStreamCreate hipStreamDestroy $ \stream -> do
+              hipMemcpyH2DWithStream dBuf (HostPtr hIn) bytes stream
+              hipStreamAddCallback stream (\_ status -> putMVar cbMVar status)
+              hipStreamSynchronize stream
+              cbStatus <- takeMVar cbMVar
+              hipMemcpyD2H (HostPtr hOut) dBuf bytes
+              output <- peekArray n hOut
+              if cbStatus == HipSuccess && output == input
+                then pure SmokePassed
+                else fail ("hip stream callback mismatch: status=" <> show cbStatus <> ", output=" <> show output)
+
+hipEventQueryTimingSmoke :: IO SmokeResult
+hipEventQueryTimingSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      let n = 1024 * 256 :: Int
+          input = fmap (CFloat . fromIntegral . (`mod` 97)) [0 .. n - 1]
+          bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+
+      bracket (hipHostMallocBytesWithFlags bytes HipHostMallocPortable :: IO (PinnedHostPtr CFloat)) hipHostFree $ \hIn ->
+        bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dBuf ->
+          bracket hipStreamCreate hipStreamDestroy $ \stream ->
+            bracket hipEventCreate hipEventDestroy $ \startEv ->
+              bracket hipEventCreate hipEventDestroy $ \stopEv -> do
+                let PinnedHostPtr pIn = hIn
+                pokeArray pIn input
+                hipEventRecord startEv stream
+                hipMemcpyH2DAsync dBuf hIn bytes stream
+                hipEventRecord stopEv stream
+                hipEventSynchronize stopEv
+                ready <- hipEventQuery stopEv
+                ms <- hipEventElapsedTime startEv stopEv
+                if ready && ms >= 0
+                  then pure SmokePassed
+                  else fail ("hip event query/timing mismatch: ready=" <> show ready <> ", ms=" <> show ms)
+
+rocfftSmoke :: IO SmokeResult
+rocfftSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> withRocfft $ do
+      let n = 16 :: Int
+          scale = fromIntegral n :: Float
+          input :: [Complex Float]
+          input = [fromIntegral k :+ fromIntegral ((k * 7) `mod` 5) | k <- [0 .. n - 1]]
+          expected = fmap (\z -> z * (scale :+ 0)) input
+          bytes = fromIntegral (n * sizeOf (undefined :: Complex Float)) :: CSize
+
+      bracket (mallocArray n) free $ \hIn ->
+        bracket (mallocArray n) free $ \hOut -> do
+          pokeArray hIn input
+
+          bracket (hipMallocBytes bytes :: IO (DevicePtr (Complex Float))) hipFree $ \dBuf -> do
+            hipMemcpyH2D dBuf (HostPtr hIn) bytes
+
+            bracket hipStreamCreate hipStreamDestroy $ \stream ->
+              withRocfftExecutionInfo $ \info -> do
+                rocfftExecutionInfoSetStream info stream
+
+                withRocfftPlan
+                  ( rocfftPlanCreate
+                      RocfftPlacementInplace
+                      RocfftTransformTypeComplexForward
+                      RocfftPrecisionSingle
+                      [fromIntegral n]
+                      1
+                      Nothing
+                  )
+                  $ \planF ->
+                    withRocfftPlan
+                      ( rocfftPlanCreate
+                          RocfftPlacementInplace
+                          RocfftTransformTypeComplexInverse
+                          RocfftPrecisionSingle
+                          [fromIntegral n]
+                          1
+                          Nothing
+                      )
+                      $ \planI -> do
+                        workF <- rocfftPlanGetWorkBufferSize planF
+                        workI <- rocfftPlanGetWorkBufferSize planI
+                        let workBytes = max workF workI
+
+                        bracket
+                          ( if workBytes > 0
+                              then Just <$> (hipMallocBytes workBytes :: IO (DevicePtr ()))
+                              else pure Nothing
+                          )
+                          (\m -> maybe (pure ()) hipFree m)
+                          $ \mWorkBuf -> do
+                            case mWorkBuf of
+                              Nothing -> pure ()
+                              Just workBuf -> rocfftExecutionInfoSetWorkBuffer info workBuf workBytes
+
+                            let DevicePtr p = dBuf
+                                inPtrs = [castPtr p]
+
+                            rocfftExecute planF inPtrs [] (Just info)
+                            rocfftExecute planI inPtrs [] (Just info)
+                            hipStreamSynchronize stream
+
+            hipMemcpyD2H (HostPtr hOut) dBuf bytes
+
+          out <- peekArray n hOut
+          if approxComplexVec out expected
+            then pure SmokePassed
+            else fail ("rocFFT mismatch: expected=" <> show expected <> ", got=" <> show out)
+
+rocfftBatchedNotInplaceSmoke :: IO SmokeResult
+rocfftBatchedNotInplaceSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> withRocfft $ do
+      let len1 = 4 :: Int
+          batchCount = 2 :: Int
+          total = len1 * batchCount
+          scale = fromIntegral len1 :: Float
+          input :: [Complex Float]
+          input = [fromIntegral i :+ fromIntegral ((i * 3) `mod` 5) | i <- [0 .. total - 1]]
+          expected = fmap (\z -> z * (scale :+ 0)) input
+          bytes = fromIntegral (total * sizeOf (undefined :: Complex Float)) :: CSize
+          strides = [1]
+          distance = fromIntegral len1 :: CSize
+
+      bracket (mallocArray total :: IO (Ptr (Complex Float))) free $ \hIn ->
+        bracket (mallocArray total :: IO (Ptr (Complex Float))) free $ \hOut -> do
+          pokeArray hIn input
+
+          bracket (hipMallocBytes bytes :: IO (DevicePtr (Complex Float))) hipFree $ \dIn ->
+            bracket (hipMallocBytes bytes :: IO (DevicePtr (Complex Float))) hipFree $ \dMid ->
+              bracket (hipMallocBytes bytes :: IO (DevicePtr (Complex Float))) hipFree $ \dOut -> do
+                hipMemcpyH2D dIn (HostPtr hIn) bytes
+
+                bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                  withRocfftExecutionInfo $ \info -> do
+                    rocfftExecutionInfoSetStream info stream
+
+                    withRocfftPlanDescription $ \desc -> do
+                      rocfftPlanDescriptionSetDataLayout
+                        desc
+                        RocfftArrayTypeComplexInterleaved
+                        RocfftArrayTypeComplexInterleaved
+                        Nothing
+                        Nothing
+                        strides
+                        distance
+                        strides
+                        distance
+
+                      withRocfftPlan
+                        ( rocfftPlanCreate
+                            RocfftPlacementNotInplace
+                            RocfftTransformTypeComplexForward
+                            RocfftPrecisionSingle
+                            [fromIntegral len1]
+                            (fromIntegral batchCount)
+                            (Just desc)
+                        )
+                        $ \planF ->
+                          withRocfftPlan
+                            ( rocfftPlanCreate
+                                RocfftPlacementNotInplace
+                                RocfftTransformTypeComplexInverse
+                                RocfftPrecisionSingle
+                                [fromIntegral len1]
+                                (fromIntegral batchCount)
+                                (Just desc)
+                            )
+                            $ \planI -> do
+                              workF <- rocfftPlanGetWorkBufferSize planF
+                              workI <- rocfftPlanGetWorkBufferSize planI
+                              let workBytes = max workF workI
+
+                              bracket
+                                (if workBytes > 0 then Just <$> (hipMallocBytes workBytes :: IO (DevicePtr ())) else pure Nothing)
+                                (\m -> maybe (pure ()) hipFree m)
+                                $ \mWorkBuf -> do
+                                  case mWorkBuf of
+                                    Nothing -> pure ()
+                                    Just workBuf -> rocfftExecutionInfoSetWorkBuffer info workBuf workBytes
+
+                                  let DevicePtr pIn = dIn
+                                      DevicePtr pMid = dMid
+                                      DevicePtr pOut = dOut
+                                  rocfftExecute planF [castPtr pIn] [castPtr pMid] (Just info)
+                                  rocfftExecute planI [castPtr pMid] [castPtr pOut] (Just info)
+                                  hipStreamSynchronize stream
+
+                hipMemcpyD2H (HostPtr hOut) dOut bytes
+
+          out <- peekArray total hOut
+          if approxComplexVec out expected
+            then pure SmokePassed
+            else fail ("rocFFT batched not-inplace mismatch: expected=" <> show expected <> ", got=" <> show out)
+
+rocblasSmoke :: IO SmokeResult
+rocblasSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      hsaOverride <- lookupEnv "HSA_OVERRIDE_GFX_VERSION"
+      archs <- discoverGpuArchs
+
+      if any ("gfx1103" `isPrefixOf`) archs && hsaOverride /= Just "11.0.0"
+        then pure (SmokeSkipped "gfx1103 detected; set HSA_OVERRIDE_GFX_VERSION=11.0.0 to run rocBLAS on this install")
+        else do
+          let n = 16 :: Int
+              alpha = 2.0 :: Float
+              xVals = [1 .. fromIntegral n] :: [Float]
+              yVals = [100, 101 ..] :: [Float]
+              xC = fmap CFloat xVals
+              yC = take n (fmap CFloat yVals)
+              expected = zipWith (\(CFloat x) (CFloat y) -> CFloat (alpha * x + y)) xC yC
+              bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+
+          bracket (mallocArray n) free $ \hX ->
+            bracket (mallocArray n) free $ \hY ->
+              bracket (mallocArray n) free $ \hOut -> do
+                pokeArray hX xC
+                pokeArray hY yC
+
+                bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dX ->
+                  bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dY -> do
+                    hipMemcpyH2D dX (HostPtr hX) bytes
+                    hipMemcpyH2D dY (HostPtr hY) bytes
+
+                    bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                      withRocblasHandle $ \handle -> do
+                        rocblasSetStream handle stream
+                        rocblasSaxpy handle (fromIntegral n :: RocblasInt) alpha dX 1 dY 1
+                        hipStreamSynchronize stream
+
+                    hipMemcpyD2H (HostPtr hOut) dY bytes
+
+                out <- peekArray n hOut
+                if approxVec out expected
+                  then pure SmokePassed
+                  else fail ("rocBLAS mismatch: expected=" <> show expected <> ", got=" <> show out)
+
+rocblasGemmSmoke :: IO SmokeResult
+rocblasGemmSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      hsaOverride <- lookupEnv "HSA_OVERRIDE_GFX_VERSION"
+      archs <- discoverGpuArchs
+
+      if any ("gfx1103" `isPrefixOf`) archs && hsaOverride /= Just "11.0.0"
+        then pure (SmokeSkipped "gfx1103 detected; set HSA_OVERRIDE_GFX_VERSION=11.0.0 to run rocBLAS on this install")
+        else do
+          let m = 2 :: Int
+              n = 2 :: Int
+              k = 2 :: Int
+              aVals = fmap CFloat [1, 3, 2, 4]
+              bVals = fmap CFloat [5, 7, 6, 8]
+              expected = fmap CFloat [19, 43, 22, 50]
+              bytesA = fromIntegral (m * k * sizeOf (undefined :: CFloat)) :: CSize
+              bytesB = fromIntegral (k * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesC = fromIntegral (m * n * sizeOf (undefined :: CFloat)) :: CSize
+
+          bracket (mallocArray (m * k)) free $ \hA ->
+            bracket (mallocArray (k * n)) free $ \hB ->
+              bracket (mallocArray (m * n)) free $ \hC -> do
+                pokeArray hA aVals
+                pokeArray hB bVals
+                pokeArray hC (replicate (m * n) (CFloat 0))
+
+                bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                  bracket (hipMallocBytes bytesB :: IO (DevicePtr CFloat)) hipFree $ \dB ->
+                    bracket (hipMallocBytes bytesC :: IO (DevicePtr CFloat)) hipFree $ \dC -> do
+                      hipMemcpyH2D dA (HostPtr hA) bytesA
+                      hipMemcpyH2D dB (HostPtr hB) bytesB
+                      hipMemcpyH2D dC (HostPtr hC) bytesC
+
+                      bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                        withRocblasHandle $ \handle -> do
+                          rocblasSetStream handle stream
+                          rocblasSgemm
+                            handle
+                            RocblasOperationNone
+                            RocblasOperationNone
+                            (fromIntegral m :: RocblasInt)
+                            (fromIntegral n :: RocblasInt)
+                            (fromIntegral k :: RocblasInt)
+                            1.0
+                            dA
+                            (fromIntegral m :: RocblasInt)
+                            dB
+                            (fromIntegral k :: RocblasInt)
+                            0.0
+                            dC
+                            (fromIntegral m :: RocblasInt)
+                          hipStreamSynchronize stream
+
+                      hipMemcpyD2H (HostPtr hC) dC bytesC
+
+                out <- peekArray (m * n) hC
+                if approxVec out expected
+                  then pure SmokePassed
+                  else fail ("rocBLAS SGEMM mismatch: expected=" <> show expected <> ", got=" <> show out)
+
+rocblasDGemmSmoke :: IO SmokeResult
+rocblasDGemmSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      hsaOverride <- lookupEnv "HSA_OVERRIDE_GFX_VERSION"
+      archs <- discoverGpuArchs
+
+      if any ("gfx1103" `isPrefixOf`) archs && hsaOverride /= Just "11.0.0"
+        then pure (SmokeSkipped "gfx1103 detected; set HSA_OVERRIDE_GFX_VERSION=11.0.0 to run rocBLAS on this install")
+        else do
+          let m = 2 :: Int
+              n = 2 :: Int
+              k = 2 :: Int
+              aVals = fmap CDouble [1, 3, 2, 4]
+              bVals = fmap CDouble [5, 7, 6, 8]
+              expected = fmap CDouble [19, 43, 22, 50]
+              bytesA = fromIntegral (m * k * sizeOf (undefined :: CDouble)) :: CSize
+              bytesB = fromIntegral (k * n * sizeOf (undefined :: CDouble)) :: CSize
+              bytesC = fromIntegral (m * n * sizeOf (undefined :: CDouble)) :: CSize
+
+          bracket (mallocArray (m * k)) free $ \hA ->
+            bracket (mallocArray (k * n)) free $ \hB ->
+              bracket (mallocArray (m * n)) free $ \hC -> do
+                pokeArray hA aVals
+                pokeArray hB bVals
+                pokeArray hC (replicate (m * n) (CDouble 0))
+
+                bracket (hipMallocBytes bytesA :: IO (DevicePtr CDouble)) hipFree $ \dA ->
+                  bracket (hipMallocBytes bytesB :: IO (DevicePtr CDouble)) hipFree $ \dB ->
+                    bracket (hipMallocBytes bytesC :: IO (DevicePtr CDouble)) hipFree $ \dC -> do
+                      hipMemcpyH2D dA (HostPtr hA) bytesA
+                      hipMemcpyH2D dB (HostPtr hB) bytesB
+                      hipMemcpyH2D dC (HostPtr hC) bytesC
+
+                      bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                        withRocblasHandle $ \handle -> do
+                          rocblasSetStream handle stream
+                          rocblasDgemm
+                            handle
+                            RocblasOperationNone
+                            RocblasOperationNone
+                            (fromIntegral m :: RocblasInt)
+                            (fromIntegral n :: RocblasInt)
+                            (fromIntegral k :: RocblasInt)
+                            1.0
+                            dA
+                            (fromIntegral m :: RocblasInt)
+                            dB
+                            (fromIntegral k :: RocblasInt)
+                            0.0
+                            dC
+                            (fromIntegral m :: RocblasInt)
+                          hipStreamSynchronize stream
+
+                      hipMemcpyD2H (HostPtr hC) dC bytesC
+
+                out <- peekArray (m * n) hC
+                if approxDVec out expected
+                  then pure SmokePassed
+                  else fail ("rocBLAS DGEMM mismatch: expected=" <> show expected <> ", got=" <> show out)
+
+requireGpu :: IO (Maybe String)
+requireGpu = do
+  count <- hipGetDeviceCount
+  pure $ if count <= 0 then Just "no HIP devices reported by runtime" else Nothing
+
+approxVec :: [CFloat] -> [CFloat] -> Bool
+approxVec xs ys =
+  length xs == length ys
+    && and (zipWith approxCFloat xs ys)
+
+approxCFloat :: CFloat -> CFloat -> Bool
+approxCFloat (CFloat a) (CFloat b) = abs (a - b) <= 1.0e-4
+
+approxDVec :: [CDouble] -> [CDouble] -> Bool
+approxDVec xs ys =
+  length xs == length ys
+    && and (zipWith approxCDouble xs ys)
+
+approxCDouble :: CDouble -> CDouble -> Bool
+approxCDouble (CDouble a) (CDouble b) = abs (a - b) <= 1.0e-10
+
+approxComplexVec :: [Complex Float] -> [Complex Float] -> Bool
+approxComplexVec xs ys =
+  length xs == length ys
+    && and (zipWith approxComplex xs ys)
+
+approxComplex :: Complex Float -> Complex Float -> Bool
+approxComplex (ar :+ ai) (br :+ bi) = abs (ar - br) <= eps && abs (ai - bi) <= eps
+  where
+    eps = 1.0e-2
+
+discoverGpuArchs :: IO [String]
+discoverGpuArchs = do
+  result <- try (readProcess "rocminfo" [] "") :: IO (Either SomeException String)
+  pure $ case result of
+    Left _ -> []
+    Right out ->
+      [ name
+      | line <- lines out
+      , let trimmed = dropWhile isSpace line
+      , Just name <- [extractName trimmed]
+      , "gfx" `isPrefixOf` name
+      ]
+  where
+    extractName :: String -> Maybe String
+    extractName line =
+      case break (== ':') line of
+        ("Name", ':' : rest) -> Just (dropWhile isSpace rest)
+        _ -> Nothing
+
+sanitize :: String -> String
+sanitize = map (\c -> if c == '\n' then ' ' else c)

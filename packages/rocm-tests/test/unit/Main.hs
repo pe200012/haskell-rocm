@@ -1,0 +1,83 @@
+{-# LANGUAGE PatternSynonyms #-}
+
+module Main (main) where
+
+import Control.Exception (SomeException, displayException, try)
+import Control.Monad (forM)
+import Foreign.C.String (peekCString)
+import System.Exit (exitFailure, exitSuccess)
+
+import ROCm.HIP
+  ( hipGetLastError
+  , hipPeekAtLastError
+  , pattern HipHostMallocPortable
+  )
+import ROCm.HIP.Raw (c_hipGetErrorString)
+import ROCm.HIP.Types (HipError(..))
+import ROCm.RocBLAS.Types (pattern RocblasStatusSuccess)
+import ROCm.RocBLAS.Error (rocblasStatusToString)
+import ROCm.RocFFT
+  ( withRocfft
+  , withRocfftExecutionInfo
+  , rocfftExecutionInfoSetLoadCallback
+  , rocfftExecutionInfoSetStoreCallback
+  )
+import ROCm.RocFFT.Types (pattern RocfftStatusSuccess)
+import ROCm.RocFFT.Error (rocfftStatusToString)
+
+main :: IO ()
+main = do
+  results <-
+    forM
+      [ ("hip-host-malloc-flags-pattern", hipHostFlagsUnit)
+      , ("hip-success-string", hipSuccessStringUnit)
+      , ("hip-last-error-reset", hipLastErrorResetUnit)
+      , ("rocblas-status-string", rocblasStatusStringUnit)
+      , ("rocfft-status-string", rocfftStatusStringUnit)
+      , ("rocfft-callback-clear", rocfftCallbackClearUnit)
+      ]
+      $ \(name, action) -> do
+        outcome <- try action :: IO (Either SomeException ())
+        case outcome of
+          Left e -> do
+            putStrLn ("FAIL  " <> name <> ": " <> displayException e)
+            pure False
+          Right () -> do
+            putStrLn ("PASS  " <> name)
+            pure True
+  if and results then exitSuccess else exitFailure
+
+hipHostFlagsUnit :: IO ()
+hipHostFlagsUnit =
+  case HipHostMallocPortable of
+    _ -> pure ()
+
+hipSuccessStringUnit :: IO ()
+hipSuccessStringUnit = do
+  cstr <- c_hipGetErrorString (HipError 0)
+  msg <- peekCString cstr
+  if null msg then fail "empty hip success string" else pure ()
+
+hipLastErrorResetUnit :: IO ()
+hipLastErrorResetUnit = do
+  _ <- hipPeekAtLastError
+  _ <- hipGetLastError
+  st2 <- hipGetLastError
+  if st2 == HipError 0 then pure () else fail ("expected HipSuccess, got " <> show st2)
+
+rocblasStatusStringUnit :: IO ()
+rocblasStatusStringUnit = do
+  msg <- rocblasStatusToString RocblasStatusSuccess
+  if null msg then fail "empty rocblas status string" else pure ()
+
+rocfftStatusStringUnit :: IO ()
+rocfftStatusStringUnit = do
+  let msg = rocfftStatusToString RocfftStatusSuccess
+  if null msg then fail "empty rocfft status string" else pure ()
+
+rocfftCallbackClearUnit :: IO ()
+rocfftCallbackClearUnit =
+  withRocfft $
+    withRocfftExecutionInfo $ \info -> do
+      rocfftExecutionInfoSetLoadCallback info Nothing Nothing 0
+      rocfftExecutionInfoSetStoreCallback info Nothing Nothing 0

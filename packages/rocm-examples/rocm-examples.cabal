@@ -1,0 +1,113 @@
+cabal-version:      3.0
+name:               rocm-examples
+version:            0.1.0.0
+synopsis:           Examples for haskell-rocm bindings
+category:           Foreign
+license:            BSD-3-Clause
+author:             haskell-rocm contributors
+maintainer:         haskell-rocm contributors
+build-type:         Simple
+
+executable hip-memcpy-roundtrip
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-memcpy-roundtrip
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocblas-saxpy
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocblas-saxpy
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocblas-sgemm
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocblas-sgemm
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocblas-dgemm
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocblas-dgemm
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocfft-c2c-1d
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocfft-c2c-1d
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocfft
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocfft-batched-notinplace
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocfft-batched-notinplace
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocfft
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-async-pinned-roundtrip
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-async-pinned-roundtrip
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-stream-callback
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-stream-callback
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N

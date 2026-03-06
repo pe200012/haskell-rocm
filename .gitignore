@@ -1,0 +1,11 @@
+dist-newstyle/
+.cabal-sandbox/
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+*.prof
+*.aux
+*.hp
+*.eventlog
+.stack-work/
