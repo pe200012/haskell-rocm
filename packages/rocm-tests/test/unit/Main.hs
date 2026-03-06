@@ -27,6 +27,8 @@ import ROCm.RocFFT.Types (pattern RocfftStatusSuccess)
 import ROCm.RocFFT.Error (rocfftStatusToString)
 import ROCm.RocRAND (rocrandGetVersion, pattern RocRandStatusSuccess)
 import ROCm.RocRAND.Error (rocRandStatusToString)
+import ROCm.RocSPARSE (pattern RocsparseStatusSuccess)
+import ROCm.RocSPARSE.Error (rocsparseStatusToString)
 
 main :: IO ()
 main = do
@@ -41,6 +43,7 @@ main = do
       , ("rocfft-callback-clear", rocfftCallbackClearUnit)
       , ("rocrand-status-string", rocrandStatusStringUnit)
       , ("rocrand-version", rocrandVersionUnit)
+      , ("rocsparse-status-string", rocsparseStatusStringUnit)
       ]
       $ \(name, action) -> do
         outcome <- try action :: IO (Either SomeException ())
@@ -102,3 +105,8 @@ rocrandVersionUnit :: IO ()
 rocrandVersionUnit = do
   version <- rocrandGetVersion
   if version > 0 then pure () else fail ("invalid rocrand version: " <> show version)
+
+rocsparseStatusStringUnit :: IO ()
+rocsparseStatusStringUnit = do
+  msg <- rocsparseStatusToString RocsparseStatusSuccess
+  if null msg then fail "empty rocsparse status string" else pure ()

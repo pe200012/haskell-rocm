@@ -143,6 +143,20 @@ executable rocrand-uniform
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
 
+executable rocsparse-scsrmv
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsparse-scsrmv
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocsparse
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
 executable hip-async-pinned-roundtrip
   main-is:          Main.hs
   hs-source-dirs:   app/hip-async-pinned-roundtrip

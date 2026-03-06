@@ -21,6 +21,7 @@ test-suite smoke
     , rocm-rocblas
     , rocm-rocfft
     , rocm-rocrand
+    , rocm-rocsparse
 
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
@@ -36,6 +37,7 @@ test-suite unit
     , rocm-rocblas
     , rocm-rocfft
     , rocm-rocrand
+    , rocm-rocsparse
 
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N

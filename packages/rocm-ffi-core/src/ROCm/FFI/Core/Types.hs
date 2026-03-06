@@ -18,6 +18,12 @@ module ROCm.FFI.Core.Types
   , RocRandGeneratorTag
   , RocRandGenerator(..)
 
+    -- * rocSPARSE
+  , RocsparseHandleTag
+  , RocsparseHandle(..)
+  , RocsparseMatDescrTag
+  , RocsparseMatDescr(..)
+
     -- * rocFFT
   , RocfftPlanTag
   , RocfftPlan(..)
@@ -60,6 +66,16 @@ newtype RocblasHandle = RocblasHandle (Ptr RocblasHandleTag)
 
 data RocRandGeneratorTag
 newtype RocRandGenerator = RocRandGenerator (Ptr RocRandGeneratorTag)
+  deriving (Eq, Ord, Show)
+
+-- rocSPARSE ------------------------------------------------------------------
+
+data RocsparseHandleTag
+newtype RocsparseHandle = RocsparseHandle (Ptr RocsparseHandleTag)
+  deriving (Eq, Ord, Show)
+
+data RocsparseMatDescrTag
+newtype RocsparseMatDescr = RocsparseMatDescr (Ptr RocsparseMatDescrTag)
   deriving (Eq, Ord, Show)
 
 -- rocFFT ---------------------------------------------------------------------
