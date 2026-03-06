@@ -96,7 +96,9 @@ import ROCm.RocSPARSE
   , withRocsparseMatDescr
   )
 import ROCm.RocSOLVER
-  ( rocsolverSgesv
+  ( rocsolverSgeqrf
+  , rocsolverSgesv
+  , rocsolverSorgqr
   , rocsolverSposv
   )
 
@@ -119,6 +121,7 @@ main = do
       , ("rocsparse-scsrmv", rocsparseScsrmvSmoke)
       , ("rocsolver-sposv", rocsolverSposvSmoke)
       , ("rocsolver-sgesv", rocsolverSgesvSmoke)
+      , ("rocsolver-sgeqrf-orgqr", rocsolverSgeqrfOrgqrSmoke)
       , ("rocblas-saxpy", rocblasSmoke)
       , ("rocblas-sgemv", rocblasGemvSmoke)
       , ("rocblas-dgemv", rocblasDGemvSmoke)
@@ -765,8 +768,123 @@ rocsolverSposvSmoke = do
 
 rocsolverSgesvSmoke :: IO SmokeResult
 rocsolverSgesvSmoke = do
-  let _ = rocsolverSgesv
-  pure SmokePassed
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let n = 2 :: Int
+              nrhs = 1 :: Int
+              aVals = fmap CFloat [0, 1, 2, 3]
+              bVals = fmap CFloat [4, 5]
+              expected = fmap CFloat [-1, 2]
+              bytesA = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesB = fromIntegral (n * nrhs * sizeOf (undefined :: CFloat)) :: CSize
+              bytesIpiv = fromIntegral (n * sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesInfo = fromIntegral (sizeOf (undefined :: RocblasInt)) :: CSize
+
+          bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray (n * nrhs) :: IO (Ptr CFloat)) free $ \hB ->
+              bracket (mallocArray 1 :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                pokeArray hA aVals
+                pokeArray hB bVals
+
+                bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                  bracket (hipMallocBytes bytesB :: IO (DevicePtr CFloat)) hipFree $ \dB ->
+                    bracket (hipMallocBytes bytesIpiv :: IO (DevicePtr RocblasInt)) hipFree $ \dIpiv ->
+                      bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                        hipMemcpyH2D dA (HostPtr hA) bytesA
+                        hipMemcpyH2D dB (HostPtr hB) bytesB
+
+                        bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                          withRocblasHandle $ \handle -> do
+                            rocblasSetStream handle stream
+                            rocsolverSgesv
+                              handle
+                              (fromIntegral n :: RocblasInt)
+                              (fromIntegral nrhs :: RocblasInt)
+                              dA
+                              (fromIntegral n :: RocblasInt)
+                              dIpiv
+                              dB
+                              (fromIntegral n :: RocblasInt)
+                              dInfo
+                            hipStreamSynchronize stream
+
+                        hipMemcpyD2H (HostPtr hB) dB bytesB
+                        hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                out <- peekArray (n * nrhs) hB
+                infoVals <- peekArray 1 hInfo
+                let infoOk = case infoVals of
+                      [infoVal] -> infoVal == 0
+                      _ -> False
+                if infoOk && approxVec out expected
+                  then pure SmokePassed
+                  else fail ("rocSOLVER SGESV mismatch: expected=" <> show expected <> ", got=" <> show out <> ", info=" <> show infoVals)
+
+rocsolverSgeqrfOrgqrSmoke :: IO SmokeResult
+rocsolverSgeqrfOrgqrSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let m = 3 :: Int
+              n = 2 :: Int
+              k = min m n
+              aOriginal = fmap CFloat [1, 2, 3, 4, 5, 6]
+              identity2 = fmap CFloat [1, 0, 0, 1]
+              bytesA = fromIntegral (m * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesTau = fromIntegral (k * sizeOf (undefined :: CFloat)) :: CSize
+
+          bracket (mallocArray (m * n) :: IO (Ptr CFloat)) free $ \hAIn ->
+            bracket (mallocArray (m * n) :: IO (Ptr CFloat)) free $ \hAFact ->
+              bracket (mallocArray (m * n) :: IO (Ptr CFloat)) free $ \hQ -> do
+                pokeArray hAIn aOriginal
+
+                bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                  bracket (hipMallocBytes bytesTau :: IO (DevicePtr CFloat)) hipFree $ \dTau -> do
+                    hipMemcpyH2D dA (HostPtr hAIn) bytesA
+
+                    bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                      withRocblasHandle $ \handle -> do
+                        rocblasSetStream handle stream
+                        rocsolverSgeqrf
+                          handle
+                          (fromIntegral m :: RocblasInt)
+                          (fromIntegral n :: RocblasInt)
+                          dA
+                          (fromIntegral m :: RocblasInt)
+                          dTau
+                        hipStreamSynchronize stream
+                        hipMemcpyD2H (HostPtr hAFact) dA bytesA
+
+                        rocsolverSorgqr
+                          handle
+                          (fromIntegral m :: RocblasInt)
+                          (fromIntegral n :: RocblasInt)
+                          (fromIntegral k :: RocblasInt)
+                          dA
+                          (fromIntegral m :: RocblasInt)
+                          dTau
+                        hipStreamSynchronize stream
+                        hipMemcpyD2H (HostPtr hQ) dA bytesA
+
+                factorized <- peekArray (m * n) hAFact
+                qVals <- peekArray (m * n) hQ
+                let rVals = extractThinRColMajor m n factorized
+                    recon = matMulColMajorCFloat m n n qVals rVals
+                    qtq = gramMatrixColMajorCFloat m n qVals
+                if approxVecWithTol 1.0e-3 recon aOriginal && approxVecWithTol 1.0e-3 qtq identity2
+                  then pure SmokePassed
+                  else fail ("rocSOLVER SGEQRF/ORGQR mismatch: recon=" <> show recon <> ", qtq=" <> show qtq <> ", r=" <> show rVals)
 
 rocblasSmoke :: IO SmokeResult
 rocblasSmoke = do
@@ -943,8 +1061,16 @@ approxVec xs ys =
   length xs == length ys
     && and (zipWith approxCFloat xs ys)
 
+approxVecWithTol :: Float -> [CFloat] -> [CFloat] -> Bool
+approxVecWithTol eps xs ys =
+  length xs == length ys
+    && and (zipWith (approxCFloatWithTol eps) xs ys)
+
 approxCFloat :: CFloat -> CFloat -> Bool
-approxCFloat (CFloat a) (CFloat b) = abs (a - b) <= 1.0e-4
+approxCFloat = approxCFloatWithTol 1.0e-4
+
+approxCFloatWithTol :: Float -> CFloat -> CFloat -> Bool
+approxCFloatWithTol eps (CFloat a) (CFloat b) = abs (a - b) <= eps
 
 approxDVec :: [CDouble] -> [CDouble] -> Bool
 approxDVec xs ys =
@@ -963,6 +1089,35 @@ approxComplex :: Complex Float -> Complex Float -> Bool
 approxComplex (ar :+ ai) (br :+ bi) = abs (ar - br) <= eps && abs (ai - bi) <= eps
   where
     eps = 1.0e-2
+
+extractThinRColMajor :: Int -> Int -> [CFloat] -> [CFloat]
+extractThinRColMajor m n vals =
+  [ if row <= col then indexColMajor m vals row col else CFloat 0
+  | col <- [0 .. k - 1]
+  , row <- [0 .. k - 1]
+  ]
+  where
+    k = min m n
+
+matMulColMajorCFloat :: Int -> Int -> Int -> [CFloat] -> [CFloat] -> [CFloat]
+matMulColMajorCFloat m k n a b =
+  [ CFloat (sum [unCFloat (indexColMajor m a row t) * unCFloat (indexColMajor k b t col) | t <- [0 .. k - 1]])
+  | col <- [0 .. n - 1]
+  , row <- [0 .. m - 1]
+  ]
+
+gramMatrixColMajorCFloat :: Int -> Int -> [CFloat] -> [CFloat]
+gramMatrixColMajorCFloat m n q =
+  [ CFloat (sum [unCFloat (indexColMajor m q row i) * unCFloat (indexColMajor m q row j) | row <- [0 .. m - 1]])
+  | j <- [0 .. n - 1]
+  , i <- [0 .. n - 1]
+  ]
+
+indexColMajor :: Int -> [a] -> Int -> Int -> a
+indexColMajor rows vals row col = vals !! (row + col * rows)
+
+unCFloat :: CFloat -> Float
+unCFloat (CFloat x) = x
 
 rocblasSkipReason :: IO (Maybe String)
 rocblasSkipReason = do

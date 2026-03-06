@@ -172,6 +172,36 @@ executable rocsolver-sposv
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
 
+executable rocsolver-sgesv
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesv
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocsolver-sgeqrf-orgqr
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgeqrf-orgqr
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
 executable hip-async-pinned-roundtrip
   main-is:          Main.hs
   hs-source-dirs:   app/hip-async-pinned-roundtrip
