@@ -1,3 +1,5 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 module Main (main) where
 
 import Control.Exception (SomeException, bracket, displayException, try)
@@ -26,8 +28,9 @@ import ROCm.HIP
   )
 import ROCm.RocBLAS
   ( RocblasInt
-  , rocblasSaxpy
+  , pattern RocblasOperationNone
   , rocblasSetStream
+  , rocblasSgemv
   , withRocblasHandle
   )
 
@@ -48,55 +51,64 @@ run = do
 
   if "gfx1103" `isPrefixOf` archName && hsaOverride /= Just "11.0.0"
     then do
-      putStrLn ("rocBLAS saxpy: skipped on " <> archName <> " because this rocBLAS install only ships gfx1100 kernels.")
-      putStrLn "Run with: HSA_OVERRIDE_GFX_VERSION=11.0.0 cabal run rocblas-saxpy"
+      putStrLn ("rocBLAS sgemv: skipped on " <> archName <> " because this rocBLAS install only ships gfx1100 kernels.")
+      putStrLn "Run with: HSA_OVERRIDE_GFX_VERSION=11.0.0 cabal run rocblas-sgemv"
       putStrLn ("Current device: " <> deviceName)
     else do
-      let n = 16 :: Int
-          alpha = 2.0 :: Float
-          xVals = [1 .. fromIntegral n] :: [Float]
-          yVals = [100, 101 ..] :: [Float]
+      let m = 2 :: Int
+          n = 2 :: Int
+          aVals = fmap CFloat [1, 3, 2, 4]
+          xVals = fmap CFloat [10, 20]
+          expected = fmap CFloat [50, 110]
+          bytesA = fromIntegral (m * n * sizeOf (undefined :: CFloat)) :: CSize
+          bytesX = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+          bytesY = fromIntegral (m * sizeOf (undefined :: CFloat)) :: CSize
 
-          xC = fmap CFloat xVals
-          yC = take n (fmap CFloat yVals)
+      bracket (mallocArray (m * n)) free $ \hA ->
+        bracket (mallocArray n) free $ \hX ->
+          bracket (mallocArray m) free $ \hY -> do
+            pokeArray hA aVals
+            pokeArray hX xVals
+            pokeArray hY (replicate m (CFloat 0))
 
-          expected = zipWith (\(CFloat x) (CFloat y) -> CFloat (alpha * x + y)) xC yC
+            bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+              bracket (hipMallocBytes bytesX :: IO (DevicePtr CFloat)) hipFree $ \dX ->
+                bracket (hipMallocBytes bytesY :: IO (DevicePtr CFloat)) hipFree $ \dY -> do
+                  hipMemcpyH2D dA (HostPtr hA) bytesA
+                  hipMemcpyH2D dX (HostPtr hX) bytesX
+                  hipMemcpyH2D dY (HostPtr hY) bytesY
 
-          bytes :: CSize
-          bytes = fromIntegral (n * sizeOf (undefined :: CFloat))
+                  bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                    withRocblasHandle $ \handle -> do
+                      rocblasSetStream handle stream
+                      rocblasSgemv
+                        handle
+                        RocblasOperationNone
+                        (fromIntegral m :: RocblasInt)
+                        (fromIntegral n :: RocblasInt)
+                        1.0
+                        dA
+                        (fromIntegral m :: RocblasInt)
+                        dX
+                        1
+                        0.0
+                        dY
+                        1
+                      hipStreamSynchronize stream
 
-      bracket (mallocArray n) free $ \hX ->
-        bracket (mallocArray n) free $ \hY ->
-          bracket (mallocArray n) free $ \hOut -> do
-            pokeArray hX xC
-            pokeArray hY yC
+                  hipMemcpyD2H (HostPtr hY) dY bytesY
 
-            bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dX ->
-              bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dY -> do
-                hipMemcpyH2D dX (HostPtr hX) bytes
-                hipMemcpyH2D dY (HostPtr hY) bytes
-
-                bracket hipStreamCreate hipStreamDestroy $ \stream ->
-                  withRocblasHandle $ \handle -> do
-                    rocblasSetStream handle stream
-                    rocblasSaxpy handle (fromIntegral n :: RocblasInt) alpha dX 1 dY 1
-                    hipStreamSynchronize stream
-
-                hipMemcpyD2H (HostPtr hOut) dY bytes
-
-            out <- peekArray n hOut
+            out <- peekArray m hY
             when (not (approxVec out expected)) $ do
-              putStrLn "rocblas_saxpy mismatch"
+              putStrLn "rocblas_sgemv mismatch"
               putStrLn ("expected: " <> show expected)
               putStrLn ("got:      " <> show out)
               exitFailure
 
-      putStrLn "rocBLAS saxpy: OK"
+      putStrLn "rocBLAS sgemv: OK"
 
 approxVec :: [CFloat] -> [CFloat] -> Bool
-approxVec xs ys =
-  length xs == length ys
-    && and (zipWith approxCFloat xs ys)
+approxVec xs ys = length xs == length ys && and (zipWith approxCFloat xs ys)
 
 approxCFloat :: CFloat -> CFloat -> Bool
 approxCFloat (CFloat a) (CFloat b) = abs (a - b) <= 1.0e-4

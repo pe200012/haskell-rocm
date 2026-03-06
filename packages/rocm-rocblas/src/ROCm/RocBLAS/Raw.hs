@@ -14,6 +14,10 @@ module ROCm.RocBLAS.Raw
   , c_rocblas_saxpy
   , c_rocblas_daxpy
 
+    -- * BLAS2
+  , c_rocblas_sgemv
+  , c_rocblas_dgemv
+
     -- * BLAS3
   , c_rocblas_sgemm
   , c_rocblas_dgemm
@@ -70,6 +74,40 @@ foreign import ccall safe "rocblas_daxpy"
     Ptr CDouble ->
     Ptr CDouble ->
     RocblasInt ->
+    Ptr CDouble ->
+    RocblasInt ->
+    IO RocblasStatus
+
+-- BLAS2 ---------------------------------------------------------------------
+
+foreign import ccall safe "rocblas_sgemv"
+  c_rocblas_sgemv ::
+    Ptr RocblasHandleTag ->
+    RocblasOperation ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CFloat ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr CFloat ->
+    Ptr CFloat ->
+    RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocblas_dgemv"
+  c_rocblas_dgemv ::
+    Ptr RocblasHandleTag ->
+    RocblasOperation ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CDouble ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr CDouble ->
     Ptr CDouble ->
     RocblasInt ->
     IO RocblasStatus

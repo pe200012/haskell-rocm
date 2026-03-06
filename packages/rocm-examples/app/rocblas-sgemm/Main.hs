@@ -17,6 +17,8 @@ import System.Process (readProcess)
 import ROCm.FFI.Core.Types (DevicePtr, HostPtr(..))
 import ROCm.HIP
   ( hipFree
+  , hipGetCurrentDeviceGcnArchName
+  , hipGetCurrentDeviceName
   , hipMallocBytes
   , hipMemcpyD2H
   , hipMemcpyH2D
@@ -43,13 +45,15 @@ main = do
 
 run :: IO ()
 run = do
+  deviceName <- hipGetCurrentDeviceName
+  archName <- detectCurrentGpuArch
   hsaOverride <- lookupEnv "HSA_OVERRIDE_GFX_VERSION"
-  archs <- discoverGpuArchs
 
-  if any ("gfx1103" `isPrefixOf`) archs && hsaOverride /= Just "11.0.0"
+  if "gfx1103" `isPrefixOf` archName && hsaOverride /= Just "11.0.0"
     then do
-      putStrLn "rocBLAS sgemm: skipped on gfx1103 because this rocBLAS install only ships gfx1100 kernels."
+      putStrLn ("rocBLAS sgemm: skipped on " <> archName <> " because this rocBLAS install only ships gfx1100 kernels.")
       putStrLn "Run with: HSA_OVERRIDE_GFX_VERSION=11.0.0 cabal run rocblas-sgemm"
+      putStrLn ("Current device: " <> deviceName)
     else do
       let m = 2 :: Int
           n = 2 :: Int
@@ -114,6 +118,17 @@ approxVec xs ys =
 approxCFloat :: CFloat -> CFloat -> Bool
 approxCFloat (CFloat a) (CFloat b) = abs (a - b) <= 1.0e-4
 
+detectCurrentGpuArch :: IO String
+detectCurrentGpuArch = do
+  archName <- hipGetCurrentDeviceGcnArchName
+  if "gfx" `isPrefixOf` archName
+    then pure archName
+    else do
+      archs <- discoverGpuArchs
+      pure (case archs of
+        x : _ -> x
+        [] -> archName)
+
 discoverGpuArchs :: IO [String]
 discoverGpuArchs = do
   result <- try (readProcess "rocminfo" [] "") :: IO (Either SomeException String)
@@ -127,7 +142,6 @@ discoverGpuArchs = do
       , "gfx" `isPrefixOf` name
       ]
   where
-    extractName :: String -> Maybe String
     extractName line =
       case break (== ':') line of
         ("Name", ':' : rest) -> Just (dropWhile isSpace rest)

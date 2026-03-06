@@ -62,6 +62,34 @@ executable rocblas-dgemm
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
 
+executable rocblas-sgemv
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocblas-sgemv
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocblas-dgemv
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocblas-dgemv
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
 executable rocfft-c2c-1d
   main-is:          Main.hs
   hs-source-dirs:   app/rocfft-c2c-1d
@@ -84,6 +112,33 @@ executable rocfft-batched-notinplace
     , rocm-ffi-core
     , rocm-hip-runtime
     , rocm-rocfft
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocfft-c2c-normalized
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocfft-c2c-normalized
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocfft
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocrand-uniform
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocrand-uniform
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocrand
+    , process
 
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N

@@ -12,6 +12,8 @@ module ROCm.RocFFT
   , rocfftPlanDescriptionDestroy
   , withRocfftPlanDescription
   , rocfftPlanDescriptionSetDataLayout
+  , rocfftPlanDescriptionSetScaleFactor
+  , rocfftGetVersionString
   , rocfftPlanCreate
   , rocfftPlanDestroy
   , withRocfftPlan
@@ -31,10 +33,11 @@ module ROCm.RocFFT
   ) where
 
 import Control.Exception (bracket, bracket_)
-import Foreign.C.Types (CSize)
-import Foreign.Marshal.Alloc (alloca)
-import Foreign.Marshal.Array (withArray)
 import Data.List.NonEmpty (nonEmpty)
+import Foreign.C.String (peekCString)
+import Foreign.C.Types (CChar, CDouble(..), CSize)
+import Foreign.Marshal.Alloc (alloca, allocaBytes)
+import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek)
 import GHC.Stack (HasCallStack)
@@ -52,6 +55,8 @@ import ROCm.RocFFT.Raw
   , c_rocfft_plan_description_create
   , c_rocfft_plan_description_destroy
   , c_rocfft_plan_description_set_data_layout
+  , c_rocfft_plan_description_set_scale_factor
+  , c_rocfft_get_version_string
   , c_rocfft_execute
   , c_rocfft_execution_info_create
   , c_rocfft_execution_info_destroy
@@ -91,6 +96,17 @@ rocfftPlanDescriptionDestroy (RocfftPlanDescription p) =
 
 withRocfftPlanDescription :: HasCallStack => (RocfftPlanDescription -> IO a) -> IO a
 withRocfftPlanDescription = bracket rocfftPlanDescriptionCreate rocfftPlanDescriptionDestroy
+
+rocfftPlanDescriptionSetScaleFactor :: HasCallStack => RocfftPlanDescription -> Double -> IO ()
+rocfftPlanDescriptionSetScaleFactor (RocfftPlanDescription desc) scaleFactor = do
+  let cScale = CDouble scaleFactor
+  checkRocfft "rocfft_plan_description_set_scale_factor" =<< c_rocfft_plan_description_set_scale_factor desc cScale
+
+rocfftGetVersionString :: HasCallStack => IO String
+rocfftGetVersionString =
+  allocaBytes 256 $ \buf -> do
+    checkRocfft "rocfft_get_version_string" =<< c_rocfft_get_version_string (castPtr buf) 256
+    peekCString (castPtr buf :: Ptr CChar)
 
 rocfftPlanDescriptionSetDataLayout ::
   HasCallStack =>

@@ -20,6 +20,7 @@ test-suite smoke
     , rocm-hip-runtime
     , rocm-rocblas
     , rocm-rocfft
+    , rocm-rocrand
 
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
@@ -34,6 +35,7 @@ test-suite unit
     , rocm-hip-runtime
     , rocm-rocblas
     , rocm-rocfft
+    , rocm-rocrand
 
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N

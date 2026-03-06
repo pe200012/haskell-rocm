@@ -14,6 +14,10 @@ module ROCm.FFI.Core.Types
   , RocblasHandleTag
   , RocblasHandle(..)
 
+    -- * rocRAND
+  , RocRandGeneratorTag
+  , RocRandGenerator(..)
+
     -- * rocFFT
   , RocfftPlanTag
   , RocfftPlan(..)
@@ -50,6 +54,12 @@ newtype PinnedHostPtr a = PinnedHostPtr (Ptr a)
 
 data RocblasHandleTag
 newtype RocblasHandle = RocblasHandle (Ptr RocblasHandleTag)
+  deriving (Eq, Ord, Show)
+
+-- rocRAND --------------------------------------------------------------------
+
+data RocRandGeneratorTag
+newtype RocRandGenerator = RocRandGenerator (Ptr RocRandGeneratorTag)
   deriving (Eq, Ord, Show)
 
 -- rocFFT ---------------------------------------------------------------------

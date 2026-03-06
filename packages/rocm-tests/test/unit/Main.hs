@@ -17,13 +17,16 @@ import ROCm.HIP.Types (HipError(..))
 import ROCm.RocBLAS.Types (pattern RocblasStatusSuccess)
 import ROCm.RocBLAS.Error (rocblasStatusToString)
 import ROCm.RocFFT
-  ( withRocfft
+  ( rocfftGetVersionString
+  , withRocfft
   , withRocfftExecutionInfo
   , rocfftExecutionInfoSetLoadCallback
   , rocfftExecutionInfoSetStoreCallback
   )
 import ROCm.RocFFT.Types (pattern RocfftStatusSuccess)
 import ROCm.RocFFT.Error (rocfftStatusToString)
+import ROCm.RocRAND (rocrandGetVersion, pattern RocRandStatusSuccess)
+import ROCm.RocRAND.Error (rocRandStatusToString)
 
 main :: IO ()
 main = do
@@ -34,7 +37,10 @@ main = do
       , ("hip-last-error-reset", hipLastErrorResetUnit)
       , ("rocblas-status-string", rocblasStatusStringUnit)
       , ("rocfft-status-string", rocfftStatusStringUnit)
+      , ("rocfft-version-string", rocfftVersionStringUnit)
       , ("rocfft-callback-clear", rocfftCallbackClearUnit)
+      , ("rocrand-status-string", rocrandStatusStringUnit)
+      , ("rocrand-version", rocrandVersionUnit)
       ]
       $ \(name, action) -> do
         outcome <- try action :: IO (Either SomeException ())
@@ -75,9 +81,24 @@ rocfftStatusStringUnit = do
   let msg = rocfftStatusToString RocfftStatusSuccess
   if null msg then fail "empty rocfft status string" else pure ()
 
+rocfftVersionStringUnit :: IO ()
+rocfftVersionStringUnit = withRocfft $ do
+  msg <- rocfftGetVersionString
+  if null msg then fail "empty rocfft version string" else pure ()
+
 rocfftCallbackClearUnit :: IO ()
 rocfftCallbackClearUnit =
   withRocfft $
     withRocfftExecutionInfo $ \info -> do
       rocfftExecutionInfoSetLoadCallback info Nothing Nothing 0
       rocfftExecutionInfoSetStoreCallback info Nothing Nothing 0
+
+rocrandStatusStringUnit :: IO ()
+rocrandStatusStringUnit = do
+  let msg = rocRandStatusToString RocRandStatusSuccess
+  if null msg then fail "empty rocrand status string" else pure ()
+
+rocrandVersionUnit :: IO ()
+rocrandVersionUnit = do
+  version <- rocrandGetVersion
+  if version > 0 then pure () else fail ("invalid rocrand version: " <> show version)

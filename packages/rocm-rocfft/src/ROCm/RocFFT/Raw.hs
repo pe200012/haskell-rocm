@@ -6,6 +6,8 @@ module ROCm.RocFFT.Raw
   , c_rocfft_plan_description_create
   , c_rocfft_plan_description_destroy
   , c_rocfft_plan_description_set_data_layout
+  , c_rocfft_plan_description_set_scale_factor
+  , c_rocfft_get_version_string
   , c_rocfft_plan_create
   , c_rocfft_plan_destroy
   , c_rocfft_plan_get_work_buffer_size
@@ -18,7 +20,7 @@ module ROCm.RocFFT.Raw
   , c_rocfft_execute
   ) where
 
-import Foreign.C.Types (CInt(..), CSize(..))
+import Foreign.C.Types (CChar, CDouble(..), CInt(..), CSize(..))
 import Foreign.Ptr (Ptr)
 import ROCm.FFI.Core.Types (RocfftExecInfoTag, RocfftPlanDescriptionTag, RocfftPlanTag)
 import ROCm.RocFFT.Types
@@ -55,6 +57,12 @@ foreign import ccall safe "rocfft_plan_description_set_data_layout"
     Ptr CSize ->
     CSize ->
     IO RocfftStatus
+
+foreign import ccall safe "rocfft_plan_description_set_scale_factor"
+  c_rocfft_plan_description_set_scale_factor :: Ptr RocfftPlanDescriptionTag -> CDouble -> IO RocfftStatus
+
+foreign import ccall safe "rocfft_get_version_string"
+  c_rocfft_get_version_string :: Ptr CChar -> CSize -> IO RocfftStatus
 
 foreign import ccall safe "rocfft_plan_create"
   c_rocfft_plan_create ::
