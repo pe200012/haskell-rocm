@@ -14,7 +14,7 @@ import ROCm.HIP
   )
 import ROCm.HIP.Raw (c_hipGetErrorString)
 import ROCm.HIP.Types (HipError(..))
-import ROCm.RocBLAS.Types (pattern RocblasStatusSuccess)
+import ROCm.RocBLAS.Types (pattern RocblasFillLower, pattern RocblasStatusSuccess)
 import ROCm.RocBLAS.Error (rocblasStatusToString)
 import ROCm.RocFFT
   ( rocfftGetVersionString
@@ -35,6 +35,7 @@ main = do
   results <-
     forM
       [ ("hip-host-malloc-flags-pattern", hipHostFlagsUnit)
+      , ("rocblas-fill-patterns", rocblasFillPatternsUnit)
       , ("hip-success-string", hipSuccessStringUnit)
       , ("hip-last-error-reset", hipLastErrorResetUnit)
       , ("rocblas-status-string", rocblasStatusStringUnit)
@@ -59,6 +60,11 @@ main = do
 hipHostFlagsUnit :: IO ()
 hipHostFlagsUnit =
   case HipHostMallocPortable of
+    _ -> pure ()
+
+rocblasFillPatternsUnit :: IO ()
+rocblasFillPatternsUnit =
+  case RocblasFillLower of
     _ -> pure ()
 
 hipSuccessStringUnit :: IO ()

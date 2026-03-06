@@ -157,6 +157,21 @@ executable rocsparse-scsrmv
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
 
+executable rocsolver-sposv
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sposv
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
 executable hip-async-pinned-roundtrip
   main-is:          Main.hs
   hs-source-dirs:   app/hip-async-pinned-roundtrip

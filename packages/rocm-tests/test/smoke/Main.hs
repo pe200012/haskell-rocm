@@ -47,6 +47,7 @@ import ROCm.HIP
   )
 import ROCm.RocBLAS
   ( RocblasInt
+  , pattern RocblasFillLower
   , pattern RocblasOperationNone
   , rocblasDgemm
   , rocblasDgemv
@@ -94,6 +95,10 @@ import ROCm.RocSPARSE
   , withRocsparseHandle
   , withRocsparseMatDescr
   )
+import ROCm.RocSOLVER
+  ( rocsolverSgesv
+  , rocsolverSposv
+  )
 
 data SmokeResult
   = SmokePassed
@@ -112,6 +117,8 @@ main = do
       , ("rocfft-batched-notinplace", rocfftBatchedNotInplaceSmoke)
       , ("rocrand-uniform", rocrandUniformSmoke)
       , ("rocsparse-scsrmv", rocsparseScsrmvSmoke)
+      , ("rocsolver-sposv", rocsolverSposvSmoke)
+      , ("rocsolver-sgesv", rocsolverSgesvSmoke)
       , ("rocblas-saxpy", rocblasSmoke)
       , ("rocblas-sgemv", rocblasGemvSmoke)
       , ("rocblas-dgemv", rocblasDGemvSmoke)
@@ -698,6 +705,69 @@ rocsparseScsrmvSmoke = do
                       then pure SmokePassed
                       else fail ("rocSPARSE SCSRMV mismatch: expected=" <> show expected <> ", got=" <> show out)
 
+rocsolverSposvSmoke :: IO SmokeResult
+rocsolverSposvSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let n = 2 :: Int
+              nrhs = 1 :: Int
+              aVals = fmap CFloat [4, 1, 1, 3]
+              bVals = fmap CFloat [1, 2]
+              expected = fmap CFloat [1 / 11, 7 / 11]
+              bytesA = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesB = fromIntegral (n * nrhs * sizeOf (undefined :: CFloat)) :: CSize
+              bytesInfo = fromIntegral (sizeOf (undefined :: RocblasInt)) :: CSize
+
+          bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray (n * nrhs) :: IO (Ptr CFloat)) free $ \hB ->
+              bracket (mallocArray 1 :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                pokeArray hA aVals
+                pokeArray hB bVals
+
+                bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                  bracket (hipMallocBytes bytesB :: IO (DevicePtr CFloat)) hipFree $ \dB ->
+                    bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                      hipMemcpyH2D dA (HostPtr hA) bytesA
+                      hipMemcpyH2D dB (HostPtr hB) bytesB
+
+                      bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                        withRocblasHandle $ \handle -> do
+                          rocblasSetStream handle stream
+                          rocsolverSposv
+                            handle
+                            RocblasFillLower
+                            (fromIntegral n :: RocblasInt)
+                            (fromIntegral nrhs :: RocblasInt)
+                            dA
+                            (fromIntegral n :: RocblasInt)
+                            dB
+                            (fromIntegral n :: RocblasInt)
+                            dInfo
+                          hipStreamSynchronize stream
+
+                      hipMemcpyD2H (HostPtr hB) dB bytesB
+                      hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                out <- peekArray (n * nrhs) hB
+                infoVals <- peekArray 1 hInfo
+                let infoOk = case infoVals of
+                      [infoVal] -> infoVal == 0
+                      _ -> False
+                if infoOk && approxVec out expected
+                  then pure SmokePassed
+                  else fail ("rocSOLVER SPOSV mismatch: expected=" <> show expected <> ", got=" <> show out <> ", info=" <> show infoVals)
+
+rocsolverSgesvSmoke :: IO SmokeResult
+rocsolverSgesvSmoke = do
+  let _ = rocsolverSgesv
+  pure SmokePassed
+
 rocblasSmoke :: IO SmokeResult
 rocblasSmoke = do
   gpuReady <- requireGpu
@@ -919,6 +989,15 @@ rocsparseSkipReason = do
   pure $
     if "gfx1103" `isPrefixOf` archName && hsaOverride /= Just "11.0.0"
       then Just "gfx1103 detected; set HSA_OVERRIDE_GFX_VERSION=11.0.0 to run rocSPARSE on this install"
+      else Nothing
+
+rocsolverSkipReason :: IO (Maybe String)
+rocsolverSkipReason = do
+  archName <- detectCurrentGpuArch
+  hsaOverride <- lookupEnv "HSA_OVERRIDE_GFX_VERSION"
+  pure $
+    if "gfx1103" `isPrefixOf` archName && hsaOverride /= Just "11.0.0"
+      then Just "gfx1103 detected; set HSA_OVERRIDE_GFX_VERSION=11.0.0 to run rocSOLVER on this install"
       else Nothing
 
 detectCurrentGpuArch :: IO String

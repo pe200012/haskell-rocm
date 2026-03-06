@@ -8,6 +8,9 @@ module ROCm.RocBLAS.Types
   , RocblasPointerMode(..)
   , pattern RocblasPointerModeHost
   , pattern RocblasPointerModeDevice
+  , RocblasFill(..)
+  , pattern RocblasFillUpper
+  , pattern RocblasFillLower
   , RocblasOperation(..)
   , pattern RocblasOperationNone
   , pattern RocblasOperationTranspose
@@ -31,6 +34,15 @@ pattern RocblasPointerModeHost = RocblasPointerMode 0
 
 pattern RocblasPointerModeDevice :: RocblasPointerMode
 pattern RocblasPointerModeDevice = RocblasPointerMode 1
+
+newtype RocblasFill = RocblasFill {unRocblasFill :: CInt}
+  deriving newtype (Eq, Ord, Show)
+
+pattern RocblasFillUpper :: RocblasFill
+pattern RocblasFillUpper = RocblasFill 121
+
+pattern RocblasFillLower :: RocblasFill
+pattern RocblasFillLower = RocblasFill 122
 
 newtype RocblasOperation = RocblasOperation {unRocblasOperation :: CInt}
   deriving newtype (Eq, Ord, Show)

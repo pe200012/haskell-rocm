@@ -1,0 +1,28 @@
+cabal-version:      3.0
+name:               rocm-rocsolver
+version:            0.1.0.0
+synopsis:           Low-level FFI bindings to rocSOLVER (C API)
+category:           Foreign
+license:            BSD-3-Clause
+author:             haskell-rocm contributors
+maintainer:         haskell-rocm contributors
+build-type:         Simple
+
+library
+  exposed-modules:
+      ROCm.RocSOLVER
+      ROCm.RocSOLVER.Raw
+
+  hs-source-dirs:
+      src
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-rocblas
+
+  extra-libraries:
+      rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall
