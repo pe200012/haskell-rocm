@@ -11,6 +11,14 @@ module ROCm.RocBLAS.Types
   , RocblasFill(..)
   , pattern RocblasFillUpper
   , pattern RocblasFillLower
+  , RocblasSvect(..)
+  , pattern RocblasSvectAll
+  , pattern RocblasSvectSingular
+  , pattern RocblasSvectOverwrite
+  , pattern RocblasSvectNone
+  , RocblasWorkmode(..)
+  , pattern RocblasOutOfPlace
+  , pattern RocblasInPlace
   , RocblasEvect(..)
   , pattern RocblasEvectOriginal
   , pattern RocblasEvectTridiagonal
@@ -47,6 +55,30 @@ pattern RocblasFillUpper = RocblasFill 121
 
 pattern RocblasFillLower :: RocblasFill
 pattern RocblasFillLower = RocblasFill 122
+
+newtype RocblasSvect = RocblasSvect {unRocblasSvect :: CInt}
+  deriving newtype (Eq, Ord, Show)
+
+pattern RocblasSvectAll :: RocblasSvect
+pattern RocblasSvectAll = RocblasSvect 191
+
+pattern RocblasSvectSingular :: RocblasSvect
+pattern RocblasSvectSingular = RocblasSvect 192
+
+pattern RocblasSvectOverwrite :: RocblasSvect
+pattern RocblasSvectOverwrite = RocblasSvect 193
+
+pattern RocblasSvectNone :: RocblasSvect
+pattern RocblasSvectNone = RocblasSvect 194
+
+newtype RocblasWorkmode = RocblasWorkmode {unRocblasWorkmode :: CInt}
+  deriving newtype (Eq, Ord, Show)
+
+pattern RocblasOutOfPlace :: RocblasWorkmode
+pattern RocblasOutOfPlace = RocblasWorkmode 201
+
+pattern RocblasInPlace :: RocblasWorkmode
+pattern RocblasInPlace = RocblasWorkmode 202
 
 newtype RocblasEvect = RocblasEvect {unRocblasEvect :: CInt}
   deriving newtype (Eq, Ord, Show)

@@ -15,6 +15,8 @@ module ROCm.RocSOLVER
   , rocsolverDorgqr
   , rocsolverSsyev
   , rocsolverDsyev
+  , rocsolverSgesvd
+  , rocsolverDgesvd
   ) where
 
 import Control.Monad (when)
@@ -24,10 +26,11 @@ import ROCm.FFI.Core.Exception (throwArgumentError)
 import ROCm.FFI.Core.Types (DevicePtr(..), RocblasHandle(..))
 import ROCm.RocBLAS.C.Types (RocblasInt)
 import ROCm.RocBLAS.Error (checkRocblas)
-import ROCm.RocBLAS.Types (RocblasEvect, RocblasFill, RocblasOperation)
+import ROCm.RocBLAS.Types (RocblasEvect, RocblasFill, RocblasOperation, RocblasSvect(..), RocblasWorkmode)
 import ROCm.RocSOLVER.Raw
   ( c_rocsolver_dgeqrf
   , c_rocsolver_dgesv
+  , c_rocsolver_dgesvd
   , c_rocsolver_dgetrf
   , c_rocsolver_dgetrs
   , c_rocsolver_dorgqr
@@ -36,6 +39,7 @@ import ROCm.RocSOLVER.Raw
   , c_rocsolver_dsyev
   , c_rocsolver_sgeqrf
   , c_rocsolver_sgesv
+  , c_rocsolver_sgesvd
   , c_rocsolver_sgetrf
   , c_rocsolver_sgetrs
   , c_rocsolver_sorgqr
@@ -317,3 +321,63 @@ rocsolverDsyev (RocblasHandle h) evect uplo n (DevicePtr a) lda (DevicePtr d) (D
   when (n < 0) $ throwArgumentError "rocsolverDsyev" "n must be >= 0"
   when (lda < max 1 n) $ throwArgumentError "rocsolverDsyev" "lda must be >= max 1 n"
   checkRocblas "rocsolver_dsyev" =<< c_rocsolver_dsyev h evect uplo n a lda d e info
+
+rocsolverSgesvd ::
+  HasCallStack =>
+  RocblasHandle ->
+  RocblasSvect ->
+  RocblasSvect ->
+  RocblasInt ->
+  RocblasInt ->
+  DevicePtr CFloat ->
+  RocblasInt ->
+  DevicePtr CFloat ->
+  DevicePtr CFloat ->
+  RocblasInt ->
+  DevicePtr CFloat ->
+  RocblasInt ->
+  DevicePtr CFloat ->
+  RocblasWorkmode ->
+  DevicePtr RocblasInt ->
+  IO ()
+rocsolverSgesvd (RocblasHandle h) leftSvect rightSvect m n (DevicePtr a) lda (DevicePtr s) (DevicePtr u) ldu (DevicePtr v) ldv (DevicePtr e) fastAlg (DevicePtr info) = do
+  validateGesvdArgs "rocsolverSgesvd" leftSvect rightSvect m n lda ldu ldv
+  checkRocblas "rocsolver_sgesvd" =<< c_rocsolver_sgesvd h leftSvect rightSvect m n a lda s u ldu v ldv e fastAlg info
+
+rocsolverDgesvd ::
+  HasCallStack =>
+  RocblasHandle ->
+  RocblasSvect ->
+  RocblasSvect ->
+  RocblasInt ->
+  RocblasInt ->
+  DevicePtr CDouble ->
+  RocblasInt ->
+  DevicePtr CDouble ->
+  DevicePtr CDouble ->
+  RocblasInt ->
+  DevicePtr CDouble ->
+  RocblasInt ->
+  DevicePtr CDouble ->
+  RocblasWorkmode ->
+  DevicePtr RocblasInt ->
+  IO ()
+rocsolverDgesvd (RocblasHandle h) leftSvect rightSvect m n (DevicePtr a) lda (DevicePtr s) (DevicePtr u) ldu (DevicePtr v) ldv (DevicePtr e) fastAlg (DevicePtr info) = do
+  validateGesvdArgs "rocsolverDgesvd" leftSvect rightSvect m n lda ldu ldv
+  checkRocblas "rocsolver_dgesvd" =<< c_rocsolver_dgesvd h leftSvect rightSvect m n a lda s u ldu v ldv e fastAlg info
+
+validateGesvdArgs :: HasCallStack => String -> RocblasSvect -> RocblasSvect -> RocblasInt -> RocblasInt -> RocblasInt -> RocblasInt -> RocblasInt -> IO ()
+validateGesvdArgs callName leftSvect rightSvect m n lda ldu ldv = do
+  let k = min m n
+      isAll sv = sv == RocblasSvect 191
+      isSingular sv = sv == RocblasSvect 192
+      isOverwrite sv = sv == RocblasSvect 193
+  when (m < 0) $ throwArgumentError callName "m must be >= 0"
+  when (n < 0) $ throwArgumentError callName "n must be >= 0"
+  when (lda < max 1 m) $ throwArgumentError callName "lda must be >= max 1 m"
+  when (isOverwrite leftSvect && isOverwrite rightSvect) $ throwArgumentError callName "left_svect and right_svect cannot both be overwrite"
+  when ((isAll leftSvect || isSingular leftSvect) && ldu < max 1 m) $ throwArgumentError callName "ldu must be >= max 1 m when left_svect is all or singular"
+  when (not (isAll leftSvect || isSingular leftSvect) && ldu < 1) $ throwArgumentError callName "ldu must be >= 1"
+  when (isAll rightSvect && ldv < max 1 n) $ throwArgumentError callName "ldv must be >= max 1 n when right_svect is all"
+  when (isSingular rightSvect && ldv < max 1 k) $ throwArgumentError callName "ldv must be >= max 1 (min m n) when right_svect is singular"
+  when (not (isAll rightSvect || isSingular rightSvect) && ldv < 1) $ throwArgumentError callName "ldv must be >= 1"

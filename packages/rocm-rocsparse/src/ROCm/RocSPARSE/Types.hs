@@ -26,6 +26,25 @@ module ROCm.RocSPARSE.Types
   , pattern RocsparseMatrixTypeSymmetric
   , pattern RocsparseMatrixTypeHermitian
   , pattern RocsparseMatrixTypeTriangular
+  , RocsparseIndexType(..)
+  , pattern RocsparseIndexTypeI32
+  , pattern RocsparseIndexTypeI64
+  , RocsparseDataType(..)
+  , pattern RocsparseDataTypeF32R
+  , pattern RocsparseDataTypeF64R
+  , pattern RocsparseDataTypeI32R
+  , RocsparseSpMVAlg(..)
+  , pattern RocsparseSpMVAlgDefault
+  , pattern RocsparseSpMVAlgCsrAdaptive
+  , pattern RocsparseSpMVAlgCsrRowsplit
+  , RocsparseSpMVInput(..)
+  , pattern RocsparseSpMVInputAlg
+  , pattern RocsparseSpMVInputOperation
+  , pattern RocsparseSpMVInputScalarDataType
+  , pattern RocsparseSpMVInputComputeDataType
+  , RocsparseV2SpMVStage(..)
+  , pattern RocsparseV2SpMVStageAnalysis
+  , pattern RocsparseV2SpMVStageCompute
   ) where
 
 import Foreign.C.Types (CInt)
@@ -98,3 +117,60 @@ pattern RocsparseMatrixTypeHermitian = RocsparseMatrixType 2
 
 pattern RocsparseMatrixTypeTriangular :: RocsparseMatrixType
 pattern RocsparseMatrixTypeTriangular = RocsparseMatrixType 3
+
+newtype RocsparseIndexType = RocsparseIndexType {unRocsparseIndexType :: CInt}
+  deriving newtype (Eq, Ord, Show)
+
+pattern RocsparseIndexTypeI32 :: RocsparseIndexType
+pattern RocsparseIndexTypeI32 = RocsparseIndexType 2
+
+pattern RocsparseIndexTypeI64 :: RocsparseIndexType
+pattern RocsparseIndexTypeI64 = RocsparseIndexType 3
+
+newtype RocsparseDataType = RocsparseDataType {unRocsparseDataType :: CInt}
+  deriving newtype (Eq, Ord, Show)
+
+pattern RocsparseDataTypeF32R :: RocsparseDataType
+pattern RocsparseDataTypeF32R = RocsparseDataType 151
+
+pattern RocsparseDataTypeF64R :: RocsparseDataType
+pattern RocsparseDataTypeF64R = RocsparseDataType 152
+
+pattern RocsparseDataTypeI32R :: RocsparseDataType
+pattern RocsparseDataTypeI32R = RocsparseDataType 162
+
+newtype RocsparseSpMVAlg = RocsparseSpMVAlg {unRocsparseSpMVAlg :: CInt}
+  deriving newtype (Eq, Ord, Show)
+
+pattern RocsparseSpMVAlgDefault :: RocsparseSpMVAlg
+pattern RocsparseSpMVAlgDefault = RocsparseSpMVAlg 0
+
+pattern RocsparseSpMVAlgCsrAdaptive :: RocsparseSpMVAlg
+pattern RocsparseSpMVAlgCsrAdaptive = RocsparseSpMVAlg 2
+
+pattern RocsparseSpMVAlgCsrRowsplit :: RocsparseSpMVAlg
+pattern RocsparseSpMVAlgCsrRowsplit = RocsparseSpMVAlg 3
+
+newtype RocsparseSpMVInput = RocsparseSpMVInput {unRocsparseSpMVInput :: CInt}
+  deriving newtype (Eq, Ord, Show)
+
+pattern RocsparseSpMVInputAlg :: RocsparseSpMVInput
+pattern RocsparseSpMVInputAlg = RocsparseSpMVInput 0
+
+pattern RocsparseSpMVInputOperation :: RocsparseSpMVInput
+pattern RocsparseSpMVInputOperation = RocsparseSpMVInput 1
+
+pattern RocsparseSpMVInputScalarDataType :: RocsparseSpMVInput
+pattern RocsparseSpMVInputScalarDataType = RocsparseSpMVInput 2
+
+pattern RocsparseSpMVInputComputeDataType :: RocsparseSpMVInput
+pattern RocsparseSpMVInputComputeDataType = RocsparseSpMVInput 3
+
+newtype RocsparseV2SpMVStage = RocsparseV2SpMVStage {unRocsparseV2SpMVStage :: CInt}
+  deriving newtype (Eq, Ord, Show)
+
+pattern RocsparseV2SpMVStageAnalysis :: RocsparseV2SpMVStage
+pattern RocsparseV2SpMVStageAnalysis = RocsparseV2SpMVStage 0
+
+pattern RocsparseV2SpMVStageCompute :: RocsparseV2SpMVStage
+pattern RocsparseV2SpMVStageCompute = RocsparseV2SpMVStage 1

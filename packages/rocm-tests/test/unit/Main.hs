@@ -14,7 +14,7 @@ import ROCm.HIP
   )
 import ROCm.HIP.Raw (c_hipGetErrorString)
 import ROCm.HIP.Types (HipError(..))
-import ROCm.RocBLAS.Types (pattern RocblasEvectOriginal, pattern RocblasFillLower, pattern RocblasStatusSuccess)
+import ROCm.RocBLAS.Types (pattern RocblasEvectOriginal, pattern RocblasFillLower, pattern RocblasInPlace, pattern RocblasStatusSuccess, pattern RocblasSvectSingular)
 import ROCm.RocBLAS.Error (rocblasStatusToString)
 import ROCm.RocFFT
   ( rocfftGetVersionString
@@ -27,7 +27,12 @@ import ROCm.RocFFT.Types (pattern RocfftStatusSuccess)
 import ROCm.RocFFT.Error (rocfftStatusToString)
 import ROCm.RocRAND (rocrandGetVersion, pattern RocRandStatusSuccess)
 import ROCm.RocRAND.Error (rocRandStatusToString)
-import ROCm.RocSPARSE (pattern RocsparseStatusSuccess)
+import ROCm.RocSPARSE
+  ( pattern RocsparseStatusSuccess
+  , pattern RocsparseIndexTypeI32
+  , pattern RocsparseDataTypeF32R
+  , pattern RocsparseV2SpMVStageAnalysis
+  )
 import ROCm.RocSPARSE.Error (rocsparseStatusToString)
 
 main :: IO ()
@@ -37,6 +42,8 @@ main = do
       [ ("hip-host-malloc-flags-pattern", hipHostFlagsUnit)
       , ("rocblas-fill-patterns", rocblasFillPatternsUnit)
       , ("rocblas-evect-patterns", rocblasEvectPatternsUnit)
+      , ("rocblas-svect-patterns", rocblasSvectPatternsUnit)
+      , ("rocblas-workmode-patterns", rocblasWorkmodePatternsUnit)
       , ("hip-success-string", hipSuccessStringUnit)
       , ("hip-last-error-reset", hipLastErrorResetUnit)
       , ("rocblas-status-string", rocblasStatusStringUnit)
@@ -46,6 +53,9 @@ main = do
       , ("rocrand-status-string", rocrandStatusStringUnit)
       , ("rocrand-version", rocrandVersionUnit)
       , ("rocsparse-status-string", rocsparseStatusStringUnit)
+      , ("rocsparse-index-type-patterns", rocsparseIndexTypePatternsUnit)
+      , ("rocsparse-data-type-patterns", rocsparseDataTypePatternsUnit)
+      , ("rocsparse-v2-spmv-stage-patterns", rocsparseV2SpMVStagePatternsUnit)
       ]
       $ \(name, action) -> do
         outcome <- try action :: IO (Either SomeException ())
@@ -71,6 +81,16 @@ rocblasFillPatternsUnit =
 rocblasEvectPatternsUnit :: IO ()
 rocblasEvectPatternsUnit =
   case RocblasEvectOriginal of
+    _ -> pure ()
+
+rocblasSvectPatternsUnit :: IO ()
+rocblasSvectPatternsUnit =
+  case RocblasSvectSingular of
+    _ -> pure ()
+
+rocblasWorkmodePatternsUnit :: IO ()
+rocblasWorkmodePatternsUnit =
+  case RocblasInPlace of
     _ -> pure ()
 
 hipSuccessStringUnit :: IO ()
@@ -122,3 +142,18 @@ rocsparseStatusStringUnit :: IO ()
 rocsparseStatusStringUnit = do
   msg <- rocsparseStatusToString RocsparseStatusSuccess
   if null msg then fail "empty rocsparse status string" else pure ()
+
+rocsparseIndexTypePatternsUnit :: IO ()
+rocsparseIndexTypePatternsUnit =
+  case RocsparseIndexTypeI32 of
+    _ -> pure ()
+
+rocsparseDataTypePatternsUnit :: IO ()
+rocsparseDataTypePatternsUnit =
+  case RocsparseDataTypeF32R of
+    _ -> pure ()
+
+rocsparseV2SpMVStagePatternsUnit :: IO ()
+rocsparseV2SpMVStagePatternsUnit =
+  case RocsparseV2SpMVStageAnalysis of
+    _ -> pure ()

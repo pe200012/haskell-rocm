@@ -157,6 +157,20 @@ executable rocsparse-scsrmv
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
 
+executable rocsparse-generic-spmv
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsparse-generic-spmv
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocsparse
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
 executable rocsolver-sposv
   main-is:          Main.hs
   hs-source-dirs:   app/rocsolver-sposv
@@ -205,6 +219,21 @@ executable rocsolver-sgeqrf-orgqr
 executable rocsolver-ssyev
   main-is:          Main.hs
   hs-source-dirs:   app/rocsolver-ssyev
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocsolver-sgesvd
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesvd
 
   build-depends:
       base >=4.18 && <5

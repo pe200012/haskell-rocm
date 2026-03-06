@@ -49,7 +49,9 @@ import ROCm.RocBLAS
   ( RocblasInt
   , pattern RocblasEvectOriginal
   , pattern RocblasFillLower
+  , pattern RocblasInPlace
   , pattern RocblasOperationNone
+  , pattern RocblasSvectSingular
   , rocblasDgemm
   , rocblasDgemv
   , rocblasSaxpy
@@ -86,19 +88,30 @@ import ROCm.RocRAND
   )
 import ROCm.RocSPARSE
   ( RocsparseInt
+  , pattern RocsparseDataTypeF32R
   , pattern RocsparseIndexBaseZero
+  , pattern RocsparseIndexTypeI32
   , pattern RocsparseMatrixTypeGeneral
   , pattern RocsparseOperationNone
+  , pattern RocsparseV2SpMVStageAnalysis
+  , pattern RocsparseV2SpMVStageCompute
+  , rocsparseConfigureSV2SpMV
   , rocsparseScsrmv
   , rocsparseSetMatIndexBase
   , rocsparseSetMatType
   , rocsparseSetStream
+  , rocsparseSV2SpMV
+  , rocsparseSV2SpMVBufferSize
+  , withRocsparseCsrDescr
+  , withRocsparseDnVecDescr
   , withRocsparseHandle
   , withRocsparseMatDescr
+  , withRocsparseSpMVDescr
   )
 import ROCm.RocSOLVER
   ( rocsolverSgeqrf
   , rocsolverSgesv
+  , rocsolverSgesvd
   , rocsolverSorgqr
   , rocsolverSposv
   , rocsolverSsyev
@@ -121,10 +134,12 @@ main = do
       , ("rocfft-batched-notinplace", rocfftBatchedNotInplaceSmoke)
       , ("rocrand-uniform", rocrandUniformSmoke)
       , ("rocsparse-scsrmv", rocsparseScsrmvSmoke)
+      , ("rocsparse-generic-spmv", rocsparseGenericSpmvSmoke)
       , ("rocsolver-sposv", rocsolverSposvSmoke)
       , ("rocsolver-sgesv", rocsolverSgesvSmoke)
       , ("rocsolver-sgeqrf-orgqr", rocsolverSgeqrfOrgqrSmoke)
       , ("rocsolver-ssyev", rocsolverSsyevSmoke)
+      , ("rocsolver-sgesvd", rocsolverSgesvdSmoke)
       , ("rocblas-saxpy", rocblasSmoke)
       , ("rocblas-sgemv", rocblasGemvSmoke)
       , ("rocblas-dgemv", rocblasDGemvSmoke)
@@ -711,6 +726,96 @@ rocsparseScsrmvSmoke = do
                       then pure SmokePassed
                       else fail ("rocSPARSE SCSRMV mismatch: expected=" <> show expected <> ", got=" <> show out)
 
+rocsparseGenericSpmvSmoke :: IO SmokeResult
+rocsparseGenericSpmvSmoke = do
+  _ <- pure RocsparseIndexTypeI32
+  _ <- pure RocsparseDataTypeF32R
+  _ <- pure RocsparseV2SpMVStageAnalysis
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsparseSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let m = 3 :: Int
+              n = 3 :: Int
+              nnz = 5 :: Int
+              rowPtrVals = [0, 2, 3, 5] :: [Int]
+              colIndVals = [0, 2, 1, 0, 2] :: [Int]
+              valVals = fmap CFloat [1, 2, 3, 4, 5]
+              xVals = fmap CFloat [10, 20, 30]
+              yVals = replicate m (CFloat 0)
+              expected = fmap CFloat [70, 60, 190]
+              bytesRowPtr = fromIntegral (length rowPtrVals * sizeOf (undefined :: RocsparseInt)) :: CSize
+              bytesColInd = fromIntegral (nnz * sizeOf (undefined :: RocsparseInt)) :: CSize
+              bytesVal = fromIntegral (nnz * sizeOf (undefined :: CFloat)) :: CSize
+              bytesX = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesY = fromIntegral (m * sizeOf (undefined :: CFloat)) :: CSize
+
+          bracket (mallocArray (length rowPtrVals) :: IO (Ptr RocsparseInt)) free $ \hRowPtr ->
+            bracket (mallocArray nnz :: IO (Ptr RocsparseInt)) free $ \hColInd ->
+              bracket (mallocArray nnz :: IO (Ptr CFloat)) free $ \hVal ->
+                bracket (mallocArray n :: IO (Ptr CFloat)) free $ \hX ->
+                  bracket (mallocArray m :: IO (Ptr CFloat)) free $ \hY -> do
+                    pokeArray hRowPtr (fromIntegral <$> rowPtrVals)
+                    pokeArray hColInd (fromIntegral <$> colIndVals)
+                    pokeArray hVal valVals
+                    pokeArray hX xVals
+                    pokeArray hY yVals
+
+                    bracket (hipMallocBytes bytesRowPtr :: IO (DevicePtr RocsparseInt)) hipFree $ \dRowPtr ->
+                      bracket (hipMallocBytes bytesColInd :: IO (DevicePtr RocsparseInt)) hipFree $ \dColInd ->
+                        bracket (hipMallocBytes bytesVal :: IO (DevicePtr CFloat)) hipFree $ \dVal ->
+                          bracket (hipMallocBytes bytesX :: IO (DevicePtr CFloat)) hipFree $ \dX ->
+                            bracket (hipMallocBytes bytesY :: IO (DevicePtr CFloat)) hipFree $ \dY ->
+                              bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                withRocsparseHandle $ \handle -> do
+                                  hipMemcpyH2D dRowPtr (HostPtr hRowPtr) bytesRowPtr
+                                  hipMemcpyH2D dColInd (HostPtr hColInd) bytesColInd
+                                  hipMemcpyH2D dVal (HostPtr hVal) bytesVal
+                                  hipMemcpyH2D dX (HostPtr hX) bytesX
+                                  hipMemcpyH2D dY (HostPtr hY) bytesY
+
+                                  rocsparseSetStream handle stream
+                                  withRocsparseCsrDescr
+                                    (fromIntegral m)
+                                    (fromIntegral n)
+                                    (fromIntegral nnz)
+                                    dRowPtr
+                                    dColInd
+                                    dVal
+                                    RocsparseIndexTypeI32
+                                    RocsparseIndexTypeI32
+                                    RocsparseIndexBaseZero
+                                    RocsparseDataTypeF32R
+                                    $ \aDescr ->
+                                      withRocsparseDnVecDescr (fromIntegral n) dX RocsparseDataTypeF32R $ \xDescr ->
+                                        withRocsparseDnVecDescr (fromIntegral m) dY RocsparseDataTypeF32R $ \yDescr ->
+                                          withRocsparseSpMVDescr $ \spmvDescr -> do
+                                            rocsparseConfigureSV2SpMV handle spmvDescr RocsparseOperationNone
+                                            analysisBytes <- rocsparseSV2SpMVBufferSize handle spmvDescr aDescr xDescr yDescr RocsparseV2SpMVStageAnalysis
+                                            computeBytes <- rocsparseSV2SpMVBufferSize handle spmvDescr aDescr xDescr yDescr RocsparseV2SpMVStageCompute
+                                            let bufferBytes = max analysisBytes computeBytes
+                                            bracket
+                                              ( if bufferBytes > 0
+                                                  then Just <$> (hipMallocBytes bufferBytes :: IO (DevicePtr ()))
+                                                  else pure Nothing
+                                              )
+                                              (\mTemp -> maybe (pure ()) hipFree mTemp)
+                                              $ \mTemp -> do
+                                                rocsparseSV2SpMV handle spmvDescr aDescr xDescr yDescr 1.0 0.0 RocsparseV2SpMVStageAnalysis bufferBytes mTemp
+                                                rocsparseSV2SpMV handle spmvDescr aDescr xDescr yDescr 1.0 0.0 RocsparseV2SpMVStageCompute bufferBytes mTemp
+                                                hipStreamSynchronize stream
+
+                                  hipMemcpyD2H (HostPtr hY) dY bytesY
+
+                    out <- peekArray m hY
+                    if approxVec out expected
+                      then pure SmokePassed
+                      else fail ("rocSPARSE generic SpMV mismatch: expected=" <> show expected <> ", got=" <> show out)
+
 rocsolverSposvSmoke :: IO SmokeResult
 rocsolverSposvSmoke = do
   gpuReady <- requireGpu
@@ -953,6 +1058,87 @@ rocsolverSsyevSmoke = do
                     && approxVecWithTol 1.0e-3 gram identity2
                   then pure SmokePassed
                   else fail ("rocSOLVER SSYEV mismatch: eigenVals=" <> show eigenVals <> ", lhs=" <> show lhs <> ", rhs=" <> show rhs <> ", gram=" <> show gram <> ", info=" <> show infoVals)
+
+rocsolverSgesvdSmoke :: IO SmokeResult
+rocsolverSgesvdSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let n = 2 :: Int
+              aOriginal = fmap CFloat [3, 0, 0, 1]
+              expectedS = fmap CFloat [3, 1]
+              identity2 = fmap CFloat [1, 0, 0, 1]
+              bytesA = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesS = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesU = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesV = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesE = fromIntegral ((n - 1) * sizeOf (undefined :: CFloat)) :: CSize
+              bytesInfo = fromIntegral (sizeOf (undefined :: RocblasInt)) :: CSize
+
+          bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray n :: IO (Ptr CFloat)) free $ \hS ->
+              bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hU ->
+                bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hV ->
+                  bracket (mallocArray 1 :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                    pokeArray hA aOriginal
+
+                    bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                      bracket (hipMallocBytes bytesS :: IO (DevicePtr CFloat)) hipFree $ \dS ->
+                        bracket (hipMallocBytes bytesU :: IO (DevicePtr CFloat)) hipFree $ \dU ->
+                          bracket (hipMallocBytes bytesV :: IO (DevicePtr CFloat)) hipFree $ \dV ->
+                            bracket (hipMallocBytes bytesE :: IO (DevicePtr CFloat)) hipFree $ \dE ->
+                              bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                                hipMemcpyH2D dA (HostPtr hA) bytesA
+
+                                bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                  withRocblasHandle $ \handle -> do
+                                    rocblasSetStream handle stream
+                                    rocsolverSgesvd
+                                      handle
+                                      RocblasSvectSingular
+                                      RocblasSvectSingular
+                                      (fromIntegral n :: RocblasInt)
+                                      (fromIntegral n :: RocblasInt)
+                                      dA
+                                      (fromIntegral n :: RocblasInt)
+                                      dS
+                                      dU
+                                      (fromIntegral n :: RocblasInt)
+                                      dV
+                                      (fromIntegral n :: RocblasInt)
+                                      dE
+                                      RocblasInPlace
+                                      dInfo
+                                    hipStreamSynchronize stream
+
+                                hipMemcpyD2H (HostPtr hS) dS bytesS
+                                hipMemcpyD2H (HostPtr hU) dU bytesU
+                                hipMemcpyD2H (HostPtr hV) dV bytesV
+                                hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                    sVals <- peekArray n hS
+                    uVals <- peekArray (n * n) hU
+                    vVals <- peekArray (n * n) hV
+                    infoVals <- peekArray 1 hInfo
+                    let infoOk = case infoVals of
+                          [infoVal] -> infoVal == 0
+                          _ -> False
+                        us = matMulColMajorCFloat n n n uVals (diagColMajorCFloat sVals)
+                        recon = matMulColMajorCFloat n n n us vVals
+                        uGram = gramMatrixColMajorCFloat n n uVals
+                        vGram = gramMatrixColMajorCFloat n n vVals
+                    if infoOk
+                        && approxVecWithTol 1.0e-3 sVals expectedS
+                        && approxVecWithTol 1.0e-3 recon aOriginal
+                        && approxVecWithTol 1.0e-3 uGram identity2
+                        && approxVecWithTol 1.0e-3 vGram identity2
+                      then pure SmokePassed
+                      else fail ("rocSOLVER SGESVD mismatch: s=" <> show sVals <> ", recon=" <> show recon <> ", uGram=" <> show uGram <> ", vGram=" <> show vGram <> ", info=" <> show infoVals)
 
 rocblasSmoke :: IO SmokeResult
 rocblasSmoke = do

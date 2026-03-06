@@ -17,13 +17,15 @@ module ROCm.RocSOLVER.Raw
   , c_rocsolver_dorgqr
   , c_rocsolver_ssyev
   , c_rocsolver_dsyev
+  , c_rocsolver_sgesvd
+  , c_rocsolver_dgesvd
   ) where
 
 import Foreign.C.Types (CInt(..), CDouble(..), CFloat(..))
 import Foreign.Ptr (Ptr)
 import ROCm.FFI.Core.Types (RocblasHandleTag)
 import ROCm.RocBLAS.C.Types (RocblasInt)
-import ROCm.RocBLAS.Types (RocblasEvect(..), RocblasFill(..), RocblasOperation(..), RocblasStatus(..))
+import ROCm.RocBLAS.Types (RocblasEvect(..), RocblasFill(..), RocblasOperation(..), RocblasStatus(..), RocblasSvect(..), RocblasWorkmode(..))
 
 foreign import ccall safe "rocsolver_spotrf"
   c_rocsolver_spotrf ::
@@ -210,5 +212,43 @@ foreign import ccall safe "rocsolver_dsyev"
     RocblasInt ->
     Ptr CDouble ->
     Ptr CDouble ->
+    Ptr RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_sgesvd"
+  c_rocsolver_sgesvd ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr CFloat ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasWorkmode ->
+    Ptr RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_dgesvd"
+  c_rocsolver_dgesvd ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr CDouble ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasWorkmode ->
     Ptr RocblasInt ->
     IO RocblasStatus
