@@ -15,6 +15,7 @@ import ROCm.HIP
   , hipPeekAtLastError
   , hipRuntimeGetVersion
   )
+import ROCm.HIP.RTC (hiprtcVersion)
 import ROCm.HIP.Raw (c_hipGetErrorString)
 import ROCm.HIP.Types
   ( HipError(..)
@@ -142,6 +143,7 @@ main = do
       , ("hip-last-error-reset", hipLastErrorResetUnit)
       , ("hip-runtime-version", hipRuntimeVersionUnit)
       , ("hip-driver-version", hipDriverVersionUnit)
+      , ("hiprtc-version", hiprtcVersionUnit)
       , ("rocblas-status-string", rocblasStatusStringUnit)
       , ("rocfft-status-patterns", rocfftStatusPatternsUnit)
       , ("rocfft-type-patterns", rocfftTypePatternsUnit)
@@ -261,6 +263,13 @@ hipDriverVersionUnit :: IO ()
 hipDriverVersionUnit = do
   version <- hipDriverGetVersion
   if version > 0 then pure () else fail ("invalid HIP driver version: " <> show version)
+
+hiprtcVersionUnit :: IO ()
+hiprtcVersionUnit = do
+  (majorVersion, minorVersion) <- hiprtcVersion
+  if majorVersion >= 0 && minorVersion >= 0
+    then pure ()
+    else fail ("invalid HIPRTC version: " <> show (majorVersion, minorVersion))
 
 rocblasStatusStringUnit :: IO ()
 rocblasStatusStringUnit = do

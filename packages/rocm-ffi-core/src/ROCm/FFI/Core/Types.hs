@@ -7,6 +7,16 @@ module ROCm.FFI.Core.Types
   , HipStream(..)
   , HipEventTag
   , HipEvent(..)
+  , HipModuleTag
+  , HipModule(..)
+  , HipFunctionTag
+  , HipFunction(..)
+  , HipGraphTag
+  , HipGraph(..)
+  , HipGraphNodeTag
+  , HipGraphNode(..)
+  , HipGraphExecTag
+  , HipGraphExec(..)
 
     -- * Pointer wrappers
   , DevicePtr(..)
@@ -52,6 +62,26 @@ newtype HipStream = HipStream (Ptr HipStreamTag)
 
 data HipEventTag
 newtype HipEvent = HipEvent (Ptr HipEventTag)
+  deriving newtype (Eq, Ord, Show)
+
+data HipModuleTag
+newtype HipModule = HipModule (Ptr HipModuleTag)
+  deriving newtype (Eq, Ord, Show)
+
+data HipFunctionTag
+newtype HipFunction = HipFunction (Ptr HipFunctionTag)
+  deriving newtype (Eq, Ord, Show)
+
+data HipGraphTag
+newtype HipGraph = HipGraph (Ptr HipGraphTag)
+  deriving newtype (Eq, Ord, Show)
+
+data HipGraphNodeTag
+newtype HipGraphNode = HipGraphNode (Ptr HipGraphNodeTag)
+  deriving newtype (Eq, Ord, Show)
+
+data HipGraphExecTag
+newtype HipGraphExec = HipGraphExec (Ptr HipGraphExecTag)
   deriving newtype (Eq, Ord, Show)
 
 -- Pointer wrappers -----------------------------------------------------------

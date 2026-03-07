@@ -35,6 +35,7 @@ module ROCm.HIP.Types
   , pattern HipEventRecordExternal
   , HipMemcpyKind(..)
   , pattern HipMemcpyHostToHost
+  , HipDim3(..)
   , pattern HipMemcpyHostToDevice
   , pattern HipMemcpyDeviceToHost
   , pattern HipMemcpyDeviceToDevice
@@ -43,6 +44,7 @@ module ROCm.HIP.Types
   ) where
 
 import Data.Bits (Bits)
+import Data.Word (Word32)
 import Foreign.C.Types (CInt, CUInt)
 
 newtype HipError = HipError {unHipError :: CInt}
@@ -165,3 +167,10 @@ pattern HipMemcpyDeviceToDeviceNoCU = HipMemcpyKind 1024
   , HipMemcpyDeviceToDeviceNoCU
   , HipMemcpyKind
   #-}
+
+data HipDim3 = HipDim3
+  { hipDim3X :: !Word32
+  , hipDim3Y :: !Word32
+  , hipDim3Z :: !Word32
+  }
+  deriving stock (Eq, Ord, Show)

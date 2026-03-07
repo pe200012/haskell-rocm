@@ -37,15 +37,34 @@ module ROCm.HIP.Raw
   , c_hipGetDeviceCount
   , c_hipGetDevice
   , c_hipGetDeviceProperties
+  , c_hipModuleLoad
+  , c_hipModuleLoadData
+  , c_hipModuleUnload
+  , c_hipModuleGetFunction
+  , c_hipModuleLaunchKernel
+  , c_hipGraphCreate
+  , c_hipGraphDestroy
+  , c_hipGraphInstantiate
+  , c_hipGraphExecDestroy
+  , c_hipGraphLaunch
+  , c_hipGraphAddMemcpyNode1D
   , c_hipGetLastError
   , c_hipPeekAtLastError
   , c_hipGetErrorString
   ) where
 
 import Foreign.C.String (CString)
-import Foreign.C.Types (CFloat(..), CInt(..), CSize(..), CUInt(..))
+import Foreign.C.Types (CChar, CFloat(..), CInt(..), CSize(..), CUInt(..))
 import Foreign.Ptr (FunPtr, Ptr)
-import ROCm.FFI.Core.Types (HipEventTag, HipStreamTag)
+import ROCm.FFI.Core.Types
+  ( HipEventTag
+  , HipFunctionTag
+  , HipGraphExecTag
+  , HipGraphNodeTag
+  , HipGraphTag
+  , HipModuleTag
+  , HipStreamTag
+  )
 import ROCm.HIP.DeviceProp (HipDeviceProp)
 import ROCm.HIP.Types
   ( HipError(..)
@@ -56,7 +75,6 @@ import ROCm.HIP.Types
   , HipMemcpyKind(..)
   , HipStreamFlags(..)
   )
-
 
 type HipStreamCallbackFun = Ptr HipStreamTag -> HipError -> Ptr () -> IO ()
 
@@ -165,8 +183,68 @@ foreign import ccall unsafe "hipGetDeviceCount"
 foreign import ccall unsafe "hipGetDevice"
   c_hipGetDevice :: Ptr CInt -> IO HipError
 
-foreign import ccall safe "hipGetDeviceProperties"
+foreign import ccall safe "hipGetDevicePropertiesR0600"
   c_hipGetDeviceProperties :: Ptr HipDeviceProp -> CInt -> IO HipError
+
+foreign import ccall safe "hipModuleLoad"
+  c_hipModuleLoad :: Ptr (Ptr HipModuleTag) -> CString -> IO HipError
+
+foreign import ccall safe "hipModuleLoadData"
+  c_hipModuleLoadData :: Ptr (Ptr HipModuleTag) -> Ptr () -> IO HipError
+
+foreign import ccall safe "hipModuleUnload"
+  c_hipModuleUnload :: Ptr HipModuleTag -> IO HipError
+
+foreign import ccall safe "hipModuleGetFunction"
+  c_hipModuleGetFunction :: Ptr (Ptr HipFunctionTag) -> Ptr HipModuleTag -> CString -> IO HipError
+
+foreign import ccall safe "hipModuleLaunchKernel"
+  c_hipModuleLaunchKernel ::
+    Ptr HipFunctionTag ->
+    CUInt ->
+    CUInt ->
+    CUInt ->
+    CUInt ->
+    CUInt ->
+    CUInt ->
+    CUInt ->
+    Ptr HipStreamTag ->
+    Ptr (Ptr ()) ->
+    Ptr (Ptr ()) ->
+    IO HipError
+
+foreign import ccall safe "hipGraphCreate"
+  c_hipGraphCreate :: Ptr (Ptr HipGraphTag) -> CUInt -> IO HipError
+
+foreign import ccall safe "hipGraphDestroy"
+  c_hipGraphDestroy :: Ptr HipGraphTag -> IO HipError
+
+foreign import ccall safe "hipGraphInstantiate"
+  c_hipGraphInstantiate ::
+    Ptr (Ptr HipGraphExecTag) ->
+    Ptr HipGraphTag ->
+    Ptr (Ptr HipGraphNodeTag) ->
+    Ptr CChar ->
+    CSize ->
+    IO HipError
+
+foreign import ccall safe "hipGraphExecDestroy"
+  c_hipGraphExecDestroy :: Ptr HipGraphExecTag -> IO HipError
+
+foreign import ccall safe "hipGraphLaunch"
+  c_hipGraphLaunch :: Ptr HipGraphExecTag -> Ptr HipStreamTag -> IO HipError
+
+foreign import ccall safe "hipGraphAddMemcpyNode1D"
+  c_hipGraphAddMemcpyNode1D ::
+    Ptr (Ptr HipGraphNodeTag) ->
+    Ptr HipGraphTag ->
+    Ptr (Ptr HipGraphNodeTag) ->
+    CSize ->
+    Ptr () ->
+    Ptr () ->
+    CSize ->
+    HipMemcpyKind ->
+    IO HipError
 
 foreign import ccall unsafe "hipGetLastError"
   c_hipGetLastError :: IO HipError

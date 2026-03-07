@@ -9,10 +9,11 @@ import Data.Char (isSpace)
 import Data.Complex (Complex((:+)))
 import Data.List (intercalate, isPrefixOf)
 import Data.Word (Word8)
-import Foreign.C.Types (CDouble(..), CFloat(..), CSize)
+import Foreign.C.Types (CDouble(..), CFloat(..), CInt, CSize)
 import Foreign.Marshal.Alloc (free)
-import Foreign.Marshal.Array (mallocArray, peekArray, pokeArray)
-import Foreign.Ptr (Ptr, castPtr, plusPtr)
+import Foreign.Marshal.Array (mallocArray, peekArray, pokeArray, withArray)
+import Foreign.Marshal.Utils (with)
+import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (sizeOf)
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
@@ -20,7 +21,8 @@ import System.Process (readProcess)
 
 import ROCm.FFI.Core.Types (DevicePtr(..), HostPtr(..), PinnedHostPtr(..))
 import ROCm.HIP
-  ( hipEventCreate
+  ( HipDim3(..)
+  , hipEventCreate
   , hipEventDestroy
   , hipEventElapsedTime
   , hipEventQuery
@@ -32,6 +34,15 @@ import ROCm.HIP
   , hipDeviceSynchronize
   , hipGetCurrentDeviceGcnArchName
   , hipGetDeviceCount
+  , hipGraphAddMemcpyNode1D
+  , hipGraphCreate
+  , hipGraphDestroy
+  , hipGraphExecDestroy
+  , hipGraphInstantiate
+  , hipGraphLaunch
+  , hipModuleGetFunction
+  , hipModuleLaunchKernel
+  , withHipModuleData
   , hipHostFree
   , hipHostMallocBytes
   , hipHostMallocBytesWithFlags
@@ -60,6 +71,11 @@ import ROCm.HIP
   , pattern HipMemcpyHostToDevice
   , pattern HipStreamNonBlocking
   , pattern HipSuccess
+  )
+import ROCm.HIP.RTC
+  ( hiprtcCompileProgram
+  , hiprtcGetCode
+  , withHiprtcProgram
   )
 import ROCm.RocBLAS
   ( RocblasInt
@@ -174,6 +190,8 @@ main = do
       , ("hip-stream-wait-event", hipStreamWaitEventSmoke)
       , ("hip-host-register-roundtrip", hipHostRegisterSmoke)
       , ("hip-event-query-timing", hipEventQueryTimingSmoke)
+      , ("hip-module-launch", hipModuleLaunchSmoke)
+      , ("hip-graph-memcpy", hipGraphMemcpySmoke)
       , ("rocfft-c2c-1d", rocfftSmoke)
       , ("rocfft-c2c-normalized", rocfftNormalizedSmoke)
       , ("rocfft-batched-notinplace", rocfftBatchedNotInplaceSmoke)
@@ -406,6 +424,86 @@ hipEventQueryTimingSmoke = do
                 if ready && ms >= 0
                   then pure SmokePassed
                   else fail ("hip event query/timing mismatch: ready=" <> show ready <> ", ms=" <> show ms)
+
+hipModuleLaunchSmoke :: IO SmokeResult
+hipModuleLaunchSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      let n = 256 :: Int
+          threads = 64 :: Int
+          blocks = (n + threads - 1) `div` threads
+          input = fmap (CFloat . fromIntegral) [0 .. n - 1]
+          expected = fmap (\(CFloat x) -> CFloat (x + 1)) input
+          bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+      arch <- normalizeHiprtcArch <$> hipGetCurrentDeviceGcnArchName
+      bracket (mallocArray n) free $ \hIn ->
+        bracket (mallocArray n) free $ \hOut -> do
+          pokeArray hIn input
+          bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dIn ->
+            bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dOut ->
+              bracket hipStreamCreate hipStreamDestroy $ \stream -> do
+                hipMemcpyH2D dIn (HostPtr hIn) bytes
+                withHiprtcProgram hipModuleLaunchSource "hip_module_launch.hip" $ \prog -> do
+                  hiprtcCompileProgram prog ["--offload-arch=" ++ arch, "-O2"]
+                  codeObject <- hiprtcGetCode prog
+                  withHipModuleData codeObject $ \modu -> do
+                    fun <- hipModuleGetFunction modu "add_one"
+                    let DevicePtr pIn = dIn
+                        DevicePtr pOut = dOut
+                        grid = HipDim3 (fromIntegral blocks) 1 1
+                        block = HipDim3 (fromIntegral threads) 1 1
+                        nArg = fromIntegral n :: CInt
+                    with pOut $ \pArgOut ->
+                      with pIn $ \pArgIn ->
+                        with nArg $ \pArgN ->
+                          withArray [castPtr pArgOut, castPtr pArgIn, castPtr pArgN] $ \kernelParams -> do
+                            hipModuleLaunchKernel fun grid block 0 (Just stream) kernelParams nullPtr
+                            hipStreamSynchronize stream
+                            hipMemcpyD2H (HostPtr hOut) dOut bytes
+                            output <- peekArray n hOut
+                            if output == expected
+                              then pure SmokePassed
+                              else fail ("hip module launch mismatch: expected=" <> show expected <> ", got=" <> show output)
+
+hipGraphMemcpySmoke :: IO SmokeResult
+hipGraphMemcpySmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      let n = 64 :: Int
+          input = fmap (CFloat . fromIntegral . (`mod` 11)) [0 .. n - 1]
+          bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+      bracket (mallocArray n) free $ \hIn ->
+        bracket (mallocArray n) free $ \hOut -> do
+          pokeArray hIn input
+          bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dBuf ->
+            bracket hipStreamCreate hipStreamDestroy $ \stream ->
+              bracket (hipGraphCreate 0) hipGraphDestroy $ \graph -> do
+                let DevicePtr pBuf = dBuf
+                h2dNode <- hipGraphAddMemcpyNode1D graph [] (castPtr pBuf) (castPtr hIn) bytes HipMemcpyHostToDevice
+                _ <- hipGraphAddMemcpyNode1D graph [h2dNode] (castPtr hOut) (castPtr pBuf) bytes HipMemcpyDeviceToHost
+                execGraph <- hipGraphInstantiate graph
+                bracket_ (pure ()) (hipGraphExecDestroy execGraph) $ do
+                  hipGraphLaunch execGraph stream
+                  hipStreamSynchronize stream
+                  output <- peekArray n hOut
+                  if output == input
+                    then pure SmokePassed
+                    else fail ("hip graph memcpy mismatch: expected=" <> show input <> ", got=" <> show output)
+
+normalizeHiprtcArch :: String -> String
+normalizeHiprtcArch = takeWhile (/= ':')
+
+hipModuleLaunchSource :: String
+hipModuleLaunchSource = unlines
+  [ "extern \"C\" __global__ void add_one(float* out, const float* in, int n) {"
+  , "  int i = blockIdx.x * blockDim.x + threadIdx.x;"
+  , "  if (i < n) out[i] = in[i] + 1.0f;"
+  , "}"
+  ]
 
 rocfftR2CC2RSmoke :: IO SmokeResult
 rocfftR2CC2RSmoke = do

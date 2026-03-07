@@ -62,20 +62,56 @@ module ROCm.HIP
     -- * Callbacks
   , hipStreamAddCallback
 
+    -- * Modules
+  , hipModuleLoad
+  , hipModuleLoadData
+  , hipModuleUnload
+  , withHipModule
+  , withHipModuleData
+  , hipModuleGetFunction
+  , hipModuleLaunchKernel
+  , hipModuleLaunchKernelWithConfigBuffer
+
+    -- * Graphs
+  , hipGraphCreate
+  , hipGraphDestroy
+  , withHipGraph
+  , hipGraphInstantiate
+  , hipGraphExecDestroy
+  , withHipGraphExec
+  , hipGraphLaunch
+  , hipGraphAddMemcpyNode1D
+
     -- * Error state
   , hipGetLastError
   , hipPeekAtLastError
   ) where
 
 import Control.Exception (SomeException, bracket, displayException, try)
-import Foreign.C.Types (CFloat(..), CInt(..), CSize, CUInt)
+import qualified Data.ByteString as BS
+import Data.Word (Word32)
+import Foreign.C.String (withCString)
+import Foreign.C.Types (CFloat(..), CInt(..), CSize, CUInt(..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (FunPtr, Ptr, castPtr, freeHaskellFunPtr)
+import Foreign.Marshal.Array (withArray)
+import Foreign.Ptr (FunPtr, Ptr, WordPtr, castPtr, freeHaskellFunPtr, nullPtr, wordPtrToPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
-import Foreign.Storable (peek)
+import Foreign.Storable (peek, poke)
 import GHC.Stack (HasCallStack)
 import System.IO (hPutStrLn, stderr)
-import ROCm.FFI.Core.Types (DevicePtr(..), HipEvent(..), HipStream(..), HipStreamTag, HostPtr(..), PinnedHostPtr(..))
+import ROCm.FFI.Core.Types
+  ( DevicePtr(..)
+  , HipEvent(..)
+  , HipFunction(..)
+  , HipGraph(..)
+  , HipGraphExec(..)
+  , HipGraphNode(..)
+  , HipModule(..)
+  , HipStream(..)
+  , HipStreamTag
+  , HostPtr(..)
+  , PinnedHostPtr(..)
+  )
 import ROCm.HIP.Device
 import ROCm.HIP.Error (checkHip)
 import ROCm.HIP.Raw
@@ -105,6 +141,17 @@ import ROCm.HIP.Raw
   , c_hipPeekAtLastError
   , c_hipRuntimeGetVersion
   , c_hipSetDevice
+  , c_hipGraphAddMemcpyNode1D
+  , c_hipGraphCreate
+  , c_hipGraphDestroy
+  , c_hipGraphExecDestroy
+  , c_hipGraphInstantiate
+  , c_hipGraphLaunch
+  , c_hipModuleGetFunction
+  , c_hipModuleLaunchKernel
+  , c_hipModuleLoad
+  , c_hipModuleLoadData
+  , c_hipModuleUnload
   , c_hipStreamAddCallback
   , c_hipStreamCreate
   , c_hipStreamCreateWithFlags
@@ -116,7 +163,8 @@ import ROCm.HIP.Raw
   , mkHipStreamCallback
   )
 import ROCm.HIP.Types
-  ( HipError
+  ( HipDim3(..)
+  , HipError
   , HipEventFlags
   , HipEventRecordFlags
   , HipHostMallocFlags
@@ -368,6 +416,146 @@ hipStreamCallbackEntry streamPtr status userData = do
     Right () -> pure ()
   freeHaskellFunPtr (hipStreamCallbackFunPtr payload)
   freeStablePtr stable
+
+-- Modules -------------------------------------------------------------------
+
+hipModuleLoad :: HasCallStack => FilePath -> IO HipModule
+hipModuleLoad path =
+  alloca $ \pModule ->
+    withCString path $ \cPath -> do
+      checkHip "hipModuleLoad" =<< c_hipModuleLoad pModule cPath
+      HipModule <$> peek pModule
+
+hipModuleLoadData :: HasCallStack => BS.ByteString -> IO HipModule
+hipModuleLoadData code =
+  alloca $ \pModule ->
+    BS.useAsCString code $ \pCode -> do
+      checkHip "hipModuleLoadData" =<< c_hipModuleLoadData pModule (castPtr pCode)
+      HipModule <$> peek pModule
+
+hipModuleUnload :: HasCallStack => HipModule -> IO ()
+hipModuleUnload (HipModule modu) = checkHip "hipModuleUnload" =<< c_hipModuleUnload modu
+
+withHipModule :: HasCallStack => FilePath -> (HipModule -> IO a) -> IO a
+withHipModule path = bracket (hipModuleLoad path) hipModuleUnload
+
+withHipModuleData :: HasCallStack => BS.ByteString -> (HipModule -> IO a) -> IO a
+withHipModuleData code = bracket (hipModuleLoadData code) hipModuleUnload
+
+hipModuleGetFunction :: HasCallStack => HipModule -> String -> IO HipFunction
+hipModuleGetFunction (HipModule modu) name =
+  alloca $ \pFunction ->
+    withCString name $ \cName -> do
+      checkHip "hipModuleGetFunction" =<< c_hipModuleGetFunction pFunction modu cName
+      HipFunction <$> peek pFunction
+
+hipModuleLaunchKernel ::
+  HasCallStack =>
+  HipFunction ->
+  HipDim3 ->
+  HipDim3 ->
+  Word32 ->
+  Maybe HipStream ->
+  Ptr (Ptr ()) ->
+  Ptr (Ptr ()) ->
+  IO ()
+hipModuleLaunchKernel (HipFunction fun) grid block sharedMemBytes mStream kernelParams extra =
+  checkHip "hipModuleLaunchKernel" =<<
+    c_hipModuleLaunchKernel
+      fun
+      (fromIntegral (hipDim3X grid))
+      (fromIntegral (hipDim3Y grid))
+      (fromIntegral (hipDim3Z grid))
+      (fromIntegral (hipDim3X block))
+      (fromIntegral (hipDim3Y block))
+      (fromIntegral (hipDim3Z block))
+      (fromIntegral sharedMemBytes)
+      (maybe nullPtr (\(HipStream s) -> s) mStream)
+      kernelParams
+      extra
+
+hipModuleLaunchKernelWithConfigBuffer ::
+  HasCallStack =>
+  HipFunction ->
+  HipDim3 ->
+  HipDim3 ->
+  Word32 ->
+  Maybe HipStream ->
+  Ptr () ->
+  CSize ->
+  IO ()
+hipModuleLaunchKernelWithConfigBuffer fun grid block sharedMemBytes mStream argBuffer argBufferSize =
+  alloca $ \pArgBufferSize -> do
+    poke pArgBufferSize argBufferSize
+    withArray
+      [ hipLaunchParamBufferPointer
+      , argBuffer
+      , hipLaunchParamBufferSize
+      , castPtr pArgBufferSize
+      , hipLaunchParamEnd
+      ]
+      $ \pExtra ->
+        hipModuleLaunchKernel fun grid block sharedMemBytes mStream nullPtr pExtra
+
+hipLaunchParamBufferPointer :: Ptr ()
+hipLaunchParamBufferPointer = wordPtrToPtr (0x01 :: WordPtr)
+
+hipLaunchParamBufferSize :: Ptr ()
+hipLaunchParamBufferSize = wordPtrToPtr (0x02 :: WordPtr)
+
+hipLaunchParamEnd :: Ptr ()
+hipLaunchParamEnd = wordPtrToPtr (0x03 :: WordPtr)
+
+-- Graphs --------------------------------------------------------------------
+
+hipGraphCreate :: HasCallStack => Word32 -> IO HipGraph
+hipGraphCreate flags =
+  alloca $ \pGraph -> do
+    checkHip "hipGraphCreate" =<< c_hipGraphCreate pGraph (fromIntegral flags)
+    HipGraph <$> peek pGraph
+
+hipGraphDestroy :: HasCallStack => HipGraph -> IO ()
+hipGraphDestroy (HipGraph graph) = checkHip "hipGraphDestroy" =<< c_hipGraphDestroy graph
+
+withHipGraph :: HasCallStack => Word32 -> (HipGraph -> IO a) -> IO a
+withHipGraph flags = bracket (hipGraphCreate flags) hipGraphDestroy
+
+hipGraphInstantiate :: HasCallStack => HipGraph -> IO HipGraphExec
+hipGraphInstantiate (HipGraph graph) =
+  alloca $ \pExec -> do
+    checkHip "hipGraphInstantiate" =<< c_hipGraphInstantiate pExec graph nullPtr nullPtr 0
+    HipGraphExec <$> peek pExec
+
+hipGraphExecDestroy :: HasCallStack => HipGraphExec -> IO ()
+hipGraphExecDestroy (HipGraphExec execGraph) = checkHip "hipGraphExecDestroy" =<< c_hipGraphExecDestroy execGraph
+
+withHipGraphExec :: HasCallStack => HipGraph -> (HipGraphExec -> IO a) -> IO a
+withHipGraphExec graph = bracket (hipGraphInstantiate graph) hipGraphExecDestroy
+
+hipGraphLaunch :: HasCallStack => HipGraphExec -> HipStream -> IO ()
+hipGraphLaunch (HipGraphExec execGraph) (HipStream stream) =
+  checkHip "hipGraphLaunch" =<< c_hipGraphLaunch execGraph stream
+
+hipGraphAddMemcpyNode1D ::
+  HasCallStack =>
+  HipGraph ->
+  [HipGraphNode] ->
+  Ptr () ->
+  Ptr () ->
+  CSize ->
+  HipMemcpyKind ->
+  IO HipGraphNode
+hipGraphAddMemcpyNode1D (HipGraph graph) deps dst src bytes kind =
+  alloca $ \pNode ->
+    withGraphDependencies deps $ \pDeps depCount -> do
+      checkHip "hipGraphAddMemcpyNode1D" =<< c_hipGraphAddMemcpyNode1D pNode graph pDeps depCount dst src bytes kind
+      HipGraphNode <$> peek pNode
+
+withGraphDependencies :: [HipGraphNode] -> (Ptr (Ptr tag) -> CSize -> IO a) -> IO a
+withGraphDependencies [] k = k nullPtr 0
+withGraphDependencies deps k =
+  withArray (map (\(HipGraphNode p) -> castPtr p) deps) $ \pDeps ->
+    k pDeps (fromIntegral (length deps))
 
 -- Error state ---------------------------------------------------------------
 

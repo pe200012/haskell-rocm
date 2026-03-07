@@ -554,3 +554,27 @@ executable rocfft-r2c-c2r-1d
 
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-module-launch
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-module-launch
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-graph-memcpy
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-graph-memcpy
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
