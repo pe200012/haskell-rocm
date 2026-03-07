@@ -11,6 +11,7 @@ module ROCm.RocFFT.Raw
   , c_rocfft_plan_create
   , c_rocfft_plan_destroy
   , c_rocfft_plan_get_work_buffer_size
+  , c_rocfft_plan_get_print
   , c_rocfft_execution_info_create
   , c_rocfft_execution_info_destroy
   , c_rocfft_execution_info_set_work_buffer
@@ -81,6 +82,9 @@ foreign import ccall safe "rocfft_plan_destroy"
 
 foreign import ccall safe "rocfft_plan_get_work_buffer_size"
   c_rocfft_plan_get_work_buffer_size :: Ptr RocfftPlanTag -> Ptr CSize -> IO RocfftStatus
+
+foreign import ccall safe "rocfft_plan_get_print"
+  c_rocfft_plan_get_print :: Ptr RocfftPlanTag -> IO RocfftStatus
 
 foreign import ccall safe "rocfft_execution_info_create"
   c_rocfft_execution_info_create :: Ptr (Ptr RocfftExecInfoTag) -> IO RocfftStatus

@@ -3,15 +3,16 @@
 module Main (main) where
 
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (SomeException, bracket, displayException, try)
+import Control.Exception (SomeException, bracket, bracket_, displayException, try)
 import Control.Monad (forM)
 import Data.Char (isSpace)
 import Data.Complex (Complex((:+)))
-import Data.List (isPrefixOf)
+import Data.List (intercalate, isPrefixOf)
+import Data.Word (Word8)
 import Foreign.C.Types (CDouble(..), CFloat(..), CSize)
 import Foreign.Marshal.Alloc (free)
 import Foreign.Marshal.Array (mallocArray, peekArray, pokeArray)
-import Foreign.Ptr (Ptr, castPtr)
+import Foreign.Ptr (Ptr, castPtr, plusPtr)
 import Foreign.Storable (sizeOf)
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
@@ -25,6 +26,8 @@ import ROCm.HIP
   , hipEventQuery
   , hipEventRecord
   , hipEventSynchronize
+  , hipEventCreateWithFlags
+  , hipEventRecordWithFlags
   , hipFree
   , hipDeviceSynchronize
   , hipGetCurrentDeviceGcnArchName
@@ -32,32 +35,57 @@ import ROCm.HIP
   , hipHostFree
   , hipHostMallocBytes
   , hipHostMallocBytesWithFlags
+  , hipHostRegister
+  , hipHostUnregister
   , hipMallocBytes
+  , hipMemcpyAsync
   , hipMemcpyD2H
   , hipMemcpyD2HAsync
   , hipMemcpyH2D
   , hipMemcpyH2DAsync
   , hipMemcpyH2DWithStream
+  , hipMemset
   , hipStreamAddCallback
   , hipStreamCreate
+  , hipStreamCreateWithFlags
   , hipStreamDestroy
+  , hipStreamQuery
   , hipStreamSynchronize
+  , hipStreamWaitEvent
+  , pattern HipEventBlockingSync
+  , pattern HipEventRecordExternal
   , pattern HipHostMallocPortable
+  , pattern HipHostRegisterMapped
+  , pattern HipMemcpyDeviceToHost
+  , pattern HipMemcpyHostToDevice
+  , pattern HipStreamNonBlocking
   , pattern HipSuccess
   )
 import ROCm.RocBLAS
   ( RocblasInt
+  , RocblasStride
   , pattern RocblasEvectOriginal
   , pattern RocblasFillLower
   , pattern RocblasInPlace
   , pattern RocblasOperationNone
+  , pattern RocblasSrangeIndex
+  , pattern RocblasSrangeValue
   , pattern RocblasSvectSingular
   , rocblasDgemm
   , rocblasDgemv
+  , rocblasSasum
   , rocblasSaxpy
+  , rocblasScopy
+  , rocblasSdot
   , rocblasSetStream
   , rocblasSgemm
+  , rocblasSgemmBatched
+  , rocblasSgemmStridedBatched
   , rocblasSgemv
+  , rocblasSgemvBatched
+  , rocblasSgemvStridedBatched
+  , rocblasSnrm2
+  , rocblasSscal
   , withRocblasHandle
   )
 import ROCm.RocFFT
@@ -67,17 +95,22 @@ import ROCm.RocFFT
   , rocfftPlanCreate
   , rocfftPlanDescriptionSetDataLayout
   , rocfftPlanDescriptionSetScaleFactor
+  , rocfftPlanGetPrint
   , rocfftPlanGetWorkBufferSize
   , withRocfft
   , withRocfftExecutionInfo
   , withRocfftPlan
   , withRocfftPlanDescription
   , pattern RocfftArrayTypeComplexInterleaved
+  , pattern RocfftArrayTypeHermitianInterleaved
+  , pattern RocfftArrayTypeReal
   , pattern RocfftPlacementInplace
   , pattern RocfftPlacementNotInplace
   , pattern RocfftPrecisionSingle
   , pattern RocfftTransformTypeComplexForward
   , pattern RocfftTransformTypeComplexInverse
+  , pattern RocfftTransformTypeRealForward
+  , pattern RocfftTransformTypeRealInverse
   )
 import ROCm.RocRAND
   ( RocRandRngType
@@ -110,8 +143,17 @@ import ROCm.RocSPARSE
   )
 import ROCm.RocSOLVER
   ( rocsolverSgeqrf
+  , rocsolverSgesdd
+  , rocsolverSgesddBatched
+  , rocsolverSgesddStridedBatched
   , rocsolverSgesv
   , rocsolverSgesvd
+  , rocsolverSgesvdj
+  , rocsolverSgesvdjBatched
+  , rocsolverSgesvdjStridedBatched
+  , rocsolverSgesvdx
+  , rocsolverSgesvdxBatched
+  , rocsolverSgesvdxStridedBatched
   , rocsolverSorgqr
   , rocsolverSposv
   , rocsolverSsyev
@@ -126,12 +168,16 @@ main = do
   results <-
     forM
       [ ("hip-memcpy-roundtrip", hipMemcpySmoke)
+      , ("hip-memset-roundtrip", hipMemsetSmoke)
       , ("hip-async-pinned-event", hipAsyncPinnedEventSmoke)
       , ("hip-stream-callback", hipStreamCallbackSmoke)
+      , ("hip-stream-wait-event", hipStreamWaitEventSmoke)
+      , ("hip-host-register-roundtrip", hipHostRegisterSmoke)
       , ("hip-event-query-timing", hipEventQueryTimingSmoke)
       , ("rocfft-c2c-1d", rocfftSmoke)
       , ("rocfft-c2c-normalized", rocfftNormalizedSmoke)
       , ("rocfft-batched-notinplace", rocfftBatchedNotInplaceSmoke)
+      , ("rocfft-r2c-c2r-1d", rocfftR2CC2RSmoke)
       , ("rocrand-uniform", rocrandUniformSmoke)
       , ("rocsparse-scsrmv", rocsparseScsrmvSmoke)
       , ("rocsparse-generic-spmv", rocsparseGenericSpmvSmoke)
@@ -140,11 +186,28 @@ main = do
       , ("rocsolver-sgeqrf-orgqr", rocsolverSgeqrfOrgqrSmoke)
       , ("rocsolver-ssyev", rocsolverSsyevSmoke)
       , ("rocsolver-sgesvd", rocsolverSgesvdSmoke)
+      , ("rocsolver-sgesdd", rocsolverSgesddSmoke)
+      , ("rocsolver-sgesdd-batched", rocsolverSgesddBatchedSmoke)
+      , ("rocsolver-sgesdd-strided-batched", rocsolverSgesddStridedBatchedSmoke)
+      , ("rocsolver-sgesvdj", rocsolverSgesvdjSmoke)
+      , ("rocsolver-sgesvdj-batched", rocsolverSgesvdjBatchedSmoke)
+      , ("rocsolver-sgesvdj-strided-batched", rocsolverSgesvdjStridedBatchedSmoke)
+      , ("rocsolver-sgesvdx", rocsolverSgesvdxSmoke)
+      , ("rocsolver-sgesvdx-value", rocsolverSgesvdxValueSmoke)
+      , ("rocsolver-sgesvdx-batched", rocsolverSgesvdxBatchedSmoke)
+      , ("rocsolver-sgesvdx-batched-value", rocsolverSgesvdxBatchedValueSmoke)
+      , ("rocsolver-sgesvdx-strided-batched", rocsolverSgesvdxStridedBatchedSmoke)
+      , ("rocsolver-sgesvdx-strided-batched-value", rocsolverSgesvdxStridedBatchedValueSmoke)
       , ("rocblas-saxpy", rocblasSmoke)
+      , ("rocblas-blas1-core", rocblasBlas1CoreSmoke)
       , ("rocblas-sgemv", rocblasGemvSmoke)
       , ("rocblas-dgemv", rocblasDGemvSmoke)
+      , ("rocblas-sgemv-batched", rocblasGemvBatchedSmoke)
+      , ("rocblas-sgemv-strided-batched", rocblasGemvStridedBatchedSmoke)
       , ("rocblas-sgemm", rocblasGemmSmoke)
       , ("rocblas-dgemm", rocblasDGemmSmoke)
+      , ("rocblas-sgemm-batched", rocblasGemmBatchedSmoke)
+      , ("rocblas-sgemm-strided-batched", rocblasGemmStridedBatchedSmoke)
       ]
       $ \(name, action) -> do
         outcome <- try action :: IO (Either SomeException SmokeResult)
@@ -186,6 +249,25 @@ hipMemcpySmoke = do
           if output == inputC
             then pure SmokePassed
             else fail ("hipMemcpy mismatch: expected=" <> show inputC <> ", got=" <> show output)
+
+hipMemsetSmoke :: IO SmokeResult
+hipMemsetSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      let n = 32 :: Int
+          bytes = fromIntegral n :: CSize
+          expected = replicate n (0x5a :: Word8)
+
+      bracket (mallocArray n :: IO (Ptr Word8)) free $ \hOut ->
+        bracket (hipMallocBytes bytes :: IO (DevicePtr Word8)) hipFree $ \dBuf -> do
+          hipMemset dBuf 0x5a bytes
+          hipMemcpyD2H (HostPtr hOut) dBuf bytes
+          output <- peekArray n hOut
+          if output == expected
+            then pure SmokePassed
+            else fail ("hip memset mismatch: expected=" <> show expected <> ", got=" <> show output)
 
 hipAsyncPinnedEventSmoke :: IO SmokeResult
 hipAsyncPinnedEventSmoke = do
@@ -241,6 +323,63 @@ hipStreamCallbackSmoke = do
                 then pure SmokePassed
                 else fail ("hip stream callback mismatch: status=" <> show cbStatus <> ", output=" <> show output)
 
+hipStreamWaitEventSmoke :: IO SmokeResult
+hipStreamWaitEventSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      let n = 16 :: Int
+          input = fmap (CFloat . fromIntegral) [0 .. n - 1]
+          bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+
+      bracket (hipHostMallocBytes bytes :: IO (PinnedHostPtr CFloat)) hipHostFree $ \hIn ->
+        bracket (hipHostMallocBytes bytes :: IO (PinnedHostPtr CFloat)) hipHostFree $ \hOut ->
+          bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dBuf ->
+            bracket (hipStreamCreateWithFlags HipStreamNonBlocking) hipStreamDestroy $ \stream1 ->
+              bracket (hipStreamCreateWithFlags HipStreamNonBlocking) hipStreamDestroy $ \stream2 ->
+                bracket (hipEventCreateWithFlags HipEventBlockingSync) hipEventDestroy $ \ev -> do
+                  let PinnedHostPtr pIn = hIn
+                      PinnedHostPtr pOut = hOut
+                  pokeArray pIn input
+                  hipMemcpyH2DAsync dBuf hIn bytes stream1
+                  hipEventRecordWithFlags ev stream1 HipEventRecordExternal
+                  hipStreamWaitEvent stream2 ev 0
+                  hipMemcpyD2HAsync hOut dBuf bytes stream2
+                  hipStreamSynchronize stream2
+                  ready <- hipStreamQuery stream2
+                  output <- peekArray n pOut
+                  if ready && output == input
+                    then pure SmokePassed
+                    else fail ("hip stream wait-event mismatch: ready=" <> show ready <> ", output=" <> show output)
+
+hipHostRegisterSmoke :: IO SmokeResult
+hipHostRegisterSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      let n = 16 :: Int
+          input = fmap (CFloat . fromIntegral) [0 .. n - 1]
+          bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+
+      bracket (mallocArray n) free $ \hIn ->
+        bracket (mallocArray n) free $ \hOut -> do
+          pokeArray hIn input
+          bracket_ (hipHostRegister (HostPtr hIn) bytes HipHostRegisterMapped) (hipHostUnregister (HostPtr hIn)) $
+            bracket_ (hipHostRegister (HostPtr hOut) bytes HipHostRegisterMapped) (hipHostUnregister (HostPtr hOut)) $
+              bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dBuf ->
+                bracket (hipStreamCreateWithFlags HipStreamNonBlocking) hipStreamDestroy $ \stream -> do
+                  let HostPtr pIn = HostPtr hIn
+                      HostPtr pOut = HostPtr hOut
+                  hipMemcpyAsync (castPtr (let DevicePtr p = dBuf in p)) (castPtr pIn) bytes HipMemcpyHostToDevice stream
+                  hipMemcpyAsync (castPtr pOut) (castPtr (let DevicePtr p = dBuf in p)) bytes HipMemcpyDeviceToHost stream
+                  hipStreamSynchronize stream
+                  output <- peekArray n hOut
+                  if output == input
+                    then pure SmokePassed
+                    else fail ("hip host register mismatch: expected=" <> show input <> ", got=" <> show output)
+
 hipEventQueryTimingSmoke :: IO SmokeResult
 hipEventQueryTimingSmoke = do
   gpuReady <- requireGpu
@@ -267,6 +406,98 @@ hipEventQueryTimingSmoke = do
                 if ready && ms >= 0
                   then pure SmokePassed
                   else fail ("hip event query/timing mismatch: ready=" <> show ready <> ", ms=" <> show ms)
+
+rocfftR2CC2RSmoke :: IO SmokeResult
+rocfftR2CC2RSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> withRocfft $ do
+      let n = 8 :: Int
+          k = n `div` 2 + 1
+          invScale = 1.0 / fromIntegral n :: Double
+          input = fmap (\x -> CFloat (fromIntegral x)) [0 .. n - 1]
+          bytesReal = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+          bytesHerm = fromIntegral (k * sizeOf (undefined :: Complex Float)) :: CSize
+
+      bracket (mallocArray n) free $ \hIn ->
+        bracket (mallocArray n) free $ \hOut -> do
+          pokeArray hIn input
+
+          bracket (hipMallocBytes bytesReal :: IO (DevicePtr CFloat)) hipFree $ \dIn ->
+            bracket (hipMallocBytes bytesHerm :: IO (DevicePtr (Complex Float))) hipFree $ \dFreq ->
+              bracket (hipMallocBytes bytesReal :: IO (DevicePtr CFloat)) hipFree $ \dOut -> do
+                hipMemcpyH2D dIn (HostPtr hIn) bytesReal
+
+                bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                  withRocfftExecutionInfo $ \info -> do
+                    rocfftExecutionInfoSetStream info stream
+                    withRocfftPlanDescription $ \descF -> do
+                      rocfftPlanDescriptionSetDataLayout
+                        descF
+                        RocfftArrayTypeReal
+                        RocfftArrayTypeHermitianInterleaved
+                        Nothing
+                        Nothing
+                        [1]
+                        (fromIntegral n)
+                        [1]
+                        (fromIntegral k)
+                      withRocfftPlan
+                        ( rocfftPlanCreate
+                            RocfftPlacementNotInplace
+                            RocfftTransformTypeRealForward
+                            RocfftPrecisionSingle
+                            [fromIntegral n]
+                            1
+                            (Just descF)
+                        )
+                        $ \planF -> do
+                          withRocfftPlanDescription $ \descI -> do
+                            rocfftPlanDescriptionSetScaleFactor descI invScale
+                            rocfftPlanDescriptionSetDataLayout
+                              descI
+                              RocfftArrayTypeHermitianInterleaved
+                              RocfftArrayTypeReal
+                              Nothing
+                              Nothing
+                              [1]
+                              (fromIntegral k)
+                              [1]
+                              (fromIntegral n)
+                            withRocfftPlan
+                              ( rocfftPlanCreate
+                                  RocfftPlacementNotInplace
+                                  RocfftTransformTypeRealInverse
+                                  RocfftPrecisionSingle
+                                  [fromIntegral n]
+                                  1
+                                  (Just descI)
+                              )
+                              $ \planI -> do
+                                rocfftPlanGetPrint planF
+                                workF <- rocfftPlanGetWorkBufferSize planF
+                                workI <- rocfftPlanGetWorkBufferSize planI
+                                let workBytes = max workF workI
+                                bracket
+                                  (if workBytes > 0 then Just <$> (hipMallocBytes workBytes :: IO (DevicePtr ())) else pure Nothing)
+                                  (\mWork -> maybe (pure ()) hipFree mWork)
+                                  $ \mWork -> do
+                                    case mWork of
+                                      Nothing -> pure ()
+                                      Just workBuf -> rocfftExecutionInfoSetWorkBuffer info workBuf workBytes
+                                    let DevicePtr pIn = dIn
+                                        DevicePtr pFreq = dFreq
+                                        DevicePtr pOut = dOut
+                                    rocfftExecute planF [castPtr pIn] [castPtr pFreq] (Just info)
+                                    rocfftExecute planI [castPtr pFreq] [castPtr pOut] (Just info)
+                                    hipStreamSynchronize stream
+
+                hipMemcpyD2H (HostPtr hOut) dOut bytesReal
+                out <- peekArray n hOut
+                if approxVecWithTol 1.0e-3 out input
+                  then pure SmokePassed
+                  else fail ("rocFFT R2C/C2R mismatch: expected=" <> show input <> ", got=" <> show out)
 
 rocfftSmoke :: IO SmokeResult
 rocfftSmoke = do
@@ -1140,6 +1371,1364 @@ rocsolverSgesvdSmoke = do
                       then pure SmokePassed
                       else fail ("rocSOLVER SGESVD mismatch: s=" <> show sVals <> ", recon=" <> show recon <> ", uGram=" <> show uGram <> ", vGram=" <> show vGram <> ", info=" <> show infoVals)
 
+rocsolverSgesddSmoke :: IO SmokeResult
+rocsolverSgesddSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let n = 2 :: Int
+              aOriginal = fmap CFloat [3, 0, 0, 1]
+              expectedS = fmap CFloat [3, 1]
+              identity2 = fmap CFloat [1, 0, 0, 1]
+              bytesA = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesS = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesU = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesV = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesInfo = fromIntegral (sizeOf (undefined :: RocblasInt)) :: CSize
+
+          bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray n :: IO (Ptr CFloat)) free $ \hS ->
+              bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hU ->
+                bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hV ->
+                  bracket (mallocArray 1 :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                    pokeArray hA aOriginal
+
+                    bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                      bracket (hipMallocBytes bytesS :: IO (DevicePtr CFloat)) hipFree $ \dS ->
+                        bracket (hipMallocBytes bytesU :: IO (DevicePtr CFloat)) hipFree $ \dU ->
+                          bracket (hipMallocBytes bytesV :: IO (DevicePtr CFloat)) hipFree $ \dV ->
+                            bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                              hipMemcpyH2D dA (HostPtr hA) bytesA
+
+                              bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                withRocblasHandle $ \handle -> do
+                                  rocblasSetStream handle stream
+                                  rocsolverSgesdd
+                                    handle
+                                    RocblasSvectSingular
+                                    RocblasSvectSingular
+                                    (fromIntegral n :: RocblasInt)
+                                    (fromIntegral n :: RocblasInt)
+                                    dA
+                                    (fromIntegral n :: RocblasInt)
+                                    dS
+                                    dU
+                                    (fromIntegral n :: RocblasInt)
+                                    dV
+                                    (fromIntegral n :: RocblasInt)
+                                    dInfo
+                                  hipStreamSynchronize stream
+
+                              hipMemcpyD2H (HostPtr hS) dS bytesS
+                              hipMemcpyD2H (HostPtr hU) dU bytesU
+                              hipMemcpyD2H (HostPtr hV) dV bytesV
+                              hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                    sVals <- peekArray n hS
+                    uVals <- peekArray (n * n) hU
+                    vVals <- peekArray (n * n) hV
+                    infoVals <- peekArray 1 hInfo
+                    let infoOk = case infoVals of
+                          [infoVal] -> infoVal == 0
+                          _ -> False
+                        us = matMulColMajorCFloat n n n uVals (diagColMajorCFloat sVals)
+                        recon = matMulColMajorCFloat n n n us vVals
+                        uGram = gramMatrixColMajorCFloat n n uVals
+                        vGram = gramMatrixColMajorCFloat n n vVals
+                    if infoOk
+                        && approxVecWithTol 1.0e-3 sVals expectedS
+                        && approxVecWithTol 1.0e-3 recon aOriginal
+                        && approxVecWithTol 1.0e-3 uGram identity2
+                        && approxVecWithTol 1.0e-3 vGram identity2
+                      then pure SmokePassed
+                      else fail ("rocSOLVER SGESDD mismatch: s=" <> show sVals <> ", recon=" <> show recon <> ", uGram=" <> show uGram <> ", vGram=" <> show vGram <> ", info=" <> show infoVals)
+
+rocsolverSgesddBatchedSmoke :: IO SmokeResult
+rocsolverSgesddBatchedSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let batchCount = 2 :: Int
+              n = 2 :: Int
+              strideSCount = n
+              strideUCount = n * n
+              strideVCount = n * n
+              aBatch0 = fmap CFloat [3, 0, 0, 1]
+              aBatch1 = fmap CFloat [4, 0, 0, 2]
+              expectedSingulars = [fmap CFloat [3, 1], fmap CFloat [4, 2]]
+              expectedMatrices = [aBatch0, aBatch1]
+              identity2 = fmap CFloat [1, 0, 0, 1]
+              matrixElems = n * n
+              matrixBytesInt = matrixElems * sizeOf (undefined :: CFloat)
+              bytesAFlat = fromIntegral (batchCount * matrixBytesInt) :: CSize
+              bytesAPtrs = fromIntegral (batchCount * sizeOf (undefined :: Ptr CFloat)) :: CSize
+              bytesS = fromIntegral (batchCount * strideSCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesU = fromIntegral (batchCount * strideUCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesV = fromIntegral (batchCount * strideVCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesInfo = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              strideS = fromIntegral strideSCount :: RocblasStride
+              strideU = fromIntegral strideUCount :: RocblasStride
+              strideV = fromIntegral strideVCount :: RocblasStride
+              batchCount' = fromIntegral batchCount :: RocblasInt
+
+          bracket (mallocArray (batchCount * matrixElems) :: IO (Ptr CFloat)) free $ \hAFlat ->
+            bracket (mallocArray batchCount :: IO (Ptr (Ptr CFloat))) free $ \hAPtrs ->
+              bracket (mallocArray (batchCount * strideSCount) :: IO (Ptr CFloat)) free $ \hS ->
+                bracket (mallocArray (batchCount * strideUCount) :: IO (Ptr CFloat)) free $ \hU ->
+                  bracket (mallocArray (batchCount * strideVCount) :: IO (Ptr CFloat)) free $ \hV ->
+                    bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                      pokeArray hAFlat (aBatch0 <> aBatch1)
+
+                      bracket (hipMallocBytes bytesAFlat :: IO (DevicePtr CFloat)) hipFree $ \dAFlat ->
+                        bracket (hipMallocBytes bytesAPtrs :: IO (DevicePtr (Ptr CFloat))) hipFree $ \dAPtrs ->
+                          bracket (hipMallocBytes bytesS :: IO (DevicePtr CFloat)) hipFree $ \dS ->
+                            bracket (hipMallocBytes bytesU :: IO (DevicePtr CFloat)) hipFree $ \dU ->
+                              bracket (hipMallocBytes bytesV :: IO (DevicePtr CFloat)) hipFree $ \dV ->
+                                bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                                  hipMemcpyH2D dAFlat (HostPtr hAFlat) bytesAFlat
+                                  let DevicePtr pAFlat = dAFlat
+                                      aPtrs = [pAFlat `plusPtr` (idx * matrixBytesInt) | idx <- [0 .. batchCount - 1]]
+                                  pokeArray hAPtrs aPtrs
+                                  hipMemcpyH2D dAPtrs (HostPtr hAPtrs) bytesAPtrs
+
+                                  bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                    withRocblasHandle $ \handle -> do
+                                      rocblasSetStream handle stream
+                                      rocsolverSgesddBatched
+                                        handle
+                                        RocblasSvectSingular
+                                        RocblasSvectSingular
+                                        (fromIntegral n :: RocblasInt)
+                                        (fromIntegral n :: RocblasInt)
+                                        dAPtrs
+                                        (fromIntegral n :: RocblasInt)
+                                        dS
+                                        strideS
+                                        dU
+                                        (fromIntegral n :: RocblasInt)
+                                        strideU
+                                        dV
+                                        (fromIntegral n :: RocblasInt)
+                                        strideV
+                                        dInfo
+                                        batchCount'
+                                      hipStreamSynchronize stream
+
+                                  hipMemcpyD2H (HostPtr hS) dS bytesS
+                                  hipMemcpyD2H (HostPtr hU) dU bytesU
+                                  hipMemcpyD2H (HostPtr hV) dV bytesV
+                                  hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                      sAll <- peekArray (batchCount * strideSCount) hS
+                      uAll <- peekArray (batchCount * strideUCount) hU
+                      vAll <- peekArray (batchCount * strideVCount) hV
+                      infoVals <- peekArray batchCount hInfo
+                      let batchSlice stride idx vals = take stride (drop (idx * stride) vals)
+                          batchReport idx =
+                            let sVals = batchSlice strideSCount idx sAll
+                                uVals = batchSlice strideUCount idx uAll
+                                vVals = batchSlice strideVCount idx vAll
+                                infoVal = infoVals !! idx
+                                us = matMulColMajorCFloat n n n uVals (diagColMajorCFloat sVals)
+                                recon = matMulColMajorCFloat n n n us vVals
+                                uGram = gramMatrixColMajorCFloat n n uVals
+                                vGram = gramMatrixColMajorCFloat n n vVals
+                                ok = infoVal == 0
+                                  && approxVecWithTol 1.0e-3 sVals (expectedSingulars !! idx)
+                                  && approxVecWithTol 1.0e-3 recon (expectedMatrices !! idx)
+                                  && approxVecWithTol 1.0e-3 uGram identity2
+                                  && approxVecWithTol 1.0e-3 vGram identity2
+                             in (ok, "batch=" <> show idx <> ", s=" <> show sVals <> ", recon=" <> show recon <> ", uGram=" <> show uGram <> ", vGram=" <> show vGram <> ", info=" <> show infoVal)
+                          reports = [batchReport idx | idx <- [0 .. batchCount - 1]]
+                      if all fst reports
+                        then pure SmokePassed
+                        else fail ("rocSOLVER SGESDD batched mismatch: " <> intercalate "; " (map snd reports))
+
+rocsolverSgesddStridedBatchedSmoke :: IO SmokeResult
+rocsolverSgesddStridedBatchedSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let batchCount = 2 :: Int
+              n = 2 :: Int
+              strideACount = n * n
+              strideSCount = n
+              strideUCount = n * n
+              strideVCount = n * n
+              aBatch0 = fmap CFloat [3, 0, 0, 1]
+              aBatch1 = fmap CFloat [4, 0, 0, 2]
+              expectedSingulars = [fmap CFloat [3, 1], fmap CFloat [4, 2]]
+              expectedMatrices = [aBatch0, aBatch1]
+              identity2 = fmap CFloat [1, 0, 0, 1]
+              bytesA = fromIntegral (batchCount * strideACount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesS = fromIntegral (batchCount * strideSCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesU = fromIntegral (batchCount * strideUCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesV = fromIntegral (batchCount * strideVCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesInfo = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              strideA = fromIntegral strideACount :: RocblasStride
+              strideS = fromIntegral strideSCount :: RocblasStride
+              strideU = fromIntegral strideUCount :: RocblasStride
+              strideV = fromIntegral strideVCount :: RocblasStride
+              batchCount' = fromIntegral batchCount :: RocblasInt
+
+          bracket (mallocArray (batchCount * strideACount) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray (batchCount * strideSCount) :: IO (Ptr CFloat)) free $ \hS ->
+              bracket (mallocArray (batchCount * strideUCount) :: IO (Ptr CFloat)) free $ \hU ->
+                bracket (mallocArray (batchCount * strideVCount) :: IO (Ptr CFloat)) free $ \hV ->
+                  bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                    pokeArray hA (aBatch0 <> aBatch1)
+
+                    bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                      bracket (hipMallocBytes bytesS :: IO (DevicePtr CFloat)) hipFree $ \dS ->
+                        bracket (hipMallocBytes bytesU :: IO (DevicePtr CFloat)) hipFree $ \dU ->
+                          bracket (hipMallocBytes bytesV :: IO (DevicePtr CFloat)) hipFree $ \dV ->
+                            bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                              hipMemcpyH2D dA (HostPtr hA) bytesA
+
+                              bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                withRocblasHandle $ \handle -> do
+                                  rocblasSetStream handle stream
+                                  rocsolverSgesddStridedBatched
+                                    handle
+                                    RocblasSvectSingular
+                                    RocblasSvectSingular
+                                    (fromIntegral n :: RocblasInt)
+                                    (fromIntegral n :: RocblasInt)
+                                    dA
+                                    (fromIntegral n :: RocblasInt)
+                                    strideA
+                                    dS
+                                    strideS
+                                    dU
+                                    (fromIntegral n :: RocblasInt)
+                                    strideU
+                                    dV
+                                    (fromIntegral n :: RocblasInt)
+                                    strideV
+                                    dInfo
+                                    batchCount'
+                                  hipStreamSynchronize stream
+
+                              hipMemcpyD2H (HostPtr hS) dS bytesS
+                              hipMemcpyD2H (HostPtr hU) dU bytesU
+                              hipMemcpyD2H (HostPtr hV) dV bytesV
+                              hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                    sAll <- peekArray (batchCount * strideSCount) hS
+                    uAll <- peekArray (batchCount * strideUCount) hU
+                    vAll <- peekArray (batchCount * strideVCount) hV
+                    infoVals <- peekArray batchCount hInfo
+                    let batchSlice stride idx vals = take stride (drop (idx * stride) vals)
+                        batchReport idx =
+                          let sVals = batchSlice strideSCount idx sAll
+                              uVals = batchSlice strideUCount idx uAll
+                              vVals = batchSlice strideVCount idx vAll
+                              infoVal = infoVals !! idx
+                              us = matMulColMajorCFloat n n n uVals (diagColMajorCFloat sVals)
+                              recon = matMulColMajorCFloat n n n us vVals
+                              uGram = gramMatrixColMajorCFloat n n uVals
+                              vGram = gramMatrixColMajorCFloat n n vVals
+                              ok = infoVal == 0
+                                && approxVecWithTol 1.0e-3 sVals (expectedSingulars !! idx)
+                                && approxVecWithTol 1.0e-3 recon (expectedMatrices !! idx)
+                                && approxVecWithTol 1.0e-3 uGram identity2
+                                && approxVecWithTol 1.0e-3 vGram identity2
+                           in (ok, "batch=" <> show idx <> ", s=" <> show sVals <> ", recon=" <> show recon <> ", uGram=" <> show uGram <> ", vGram=" <> show vGram <> ", info=" <> show infoVal)
+                        reports = [batchReport idx | idx <- [0 .. batchCount - 1]]
+                    if all fst reports
+                      then pure SmokePassed
+                      else fail ("rocSOLVER SGESDD strided-batched mismatch: " <> intercalate "; " (map snd reports))
+
+rocsolverSgesvdjBatchedSmoke :: IO SmokeResult
+rocsolverSgesvdjBatchedSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let batchCount = 2 :: Int
+              n = 2 :: Int
+              maxSweeps = 100 :: RocblasInt
+              strideSCount = n
+              strideUCount = n * n
+              strideVCount = n * n
+              aBatch0 = fmap CFloat [3, 0, 0, 1]
+              aBatch1 = fmap CFloat [4, 0, 0, 2]
+              expectedSingulars = [fmap CFloat [3, 1], fmap CFloat [4, 2]]
+              expectedMatrices = [aBatch0, aBatch1]
+              identity2 = fmap CFloat [1, 0, 0, 1]
+              matrixElems = n * n
+              matrixBytesInt = matrixElems * sizeOf (undefined :: CFloat)
+              bytesAFlat = fromIntegral (batchCount * matrixBytesInt) :: CSize
+              bytesAPtrs = fromIntegral (batchCount * sizeOf (undefined :: Ptr CFloat)) :: CSize
+              bytesResidual = fromIntegral (batchCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesNSweeps = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesS = fromIntegral (batchCount * strideSCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesU = fromIntegral (batchCount * strideUCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesV = fromIntegral (batchCount * strideVCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesInfo = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              strideS = fromIntegral strideSCount :: RocblasStride
+              strideU = fromIntegral strideUCount :: RocblasStride
+              strideV = fromIntegral strideVCount :: RocblasStride
+              batchCount' = fromIntegral batchCount :: RocblasInt
+
+          bracket (mallocArray (batchCount * matrixElems) :: IO (Ptr CFloat)) free $ \hAFlat ->
+            bracket (mallocArray batchCount :: IO (Ptr (Ptr CFloat))) free $ \hAPtrs ->
+              bracket (mallocArray batchCount :: IO (Ptr CFloat)) free $ \hResidual ->
+                bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hNSweeps ->
+                  bracket (mallocArray (batchCount * strideSCount) :: IO (Ptr CFloat)) free $ \hS ->
+                    bracket (mallocArray (batchCount * strideUCount) :: IO (Ptr CFloat)) free $ \hU ->
+                      bracket (mallocArray (batchCount * strideVCount) :: IO (Ptr CFloat)) free $ \hV ->
+                        bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                          pokeArray hAFlat (aBatch0 <> aBatch1)
+
+                          bracket (hipMallocBytes bytesAFlat :: IO (DevicePtr CFloat)) hipFree $ \dAFlat ->
+                            bracket (hipMallocBytes bytesAPtrs :: IO (DevicePtr (Ptr CFloat))) hipFree $ \dAPtrs ->
+                              bracket (hipMallocBytes bytesResidual :: IO (DevicePtr CFloat)) hipFree $ \dResidual ->
+                                bracket (hipMallocBytes bytesNSweeps :: IO (DevicePtr RocblasInt)) hipFree $ \dNSweeps ->
+                                  bracket (hipMallocBytes bytesS :: IO (DevicePtr CFloat)) hipFree $ \dS ->
+                                    bracket (hipMallocBytes bytesU :: IO (DevicePtr CFloat)) hipFree $ \dU ->
+                                      bracket (hipMallocBytes bytesV :: IO (DevicePtr CFloat)) hipFree $ \dV ->
+                                        bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                                          hipMemcpyH2D dAFlat (HostPtr hAFlat) bytesAFlat
+                                          let DevicePtr pAFlat = dAFlat
+                                              aPtrs = [pAFlat `plusPtr` (idx * matrixBytesInt) | idx <- [0 .. batchCount - 1]]
+                                          pokeArray hAPtrs aPtrs
+                                          hipMemcpyH2D dAPtrs (HostPtr hAPtrs) bytesAPtrs
+
+                                          bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                            withRocblasHandle $ \handle -> do
+                                              rocblasSetStream handle stream
+                                              rocsolverSgesvdjBatched
+                                                handle
+                                                RocblasSvectSingular
+                                                RocblasSvectSingular
+                                                (fromIntegral n :: RocblasInt)
+                                                (fromIntegral n :: RocblasInt)
+                                                dAPtrs
+                                                (fromIntegral n :: RocblasInt)
+                                                0.0
+                                                dResidual
+                                                maxSweeps
+                                                dNSweeps
+                                                dS
+                                                strideS
+                                                dU
+                                                (fromIntegral n :: RocblasInt)
+                                                strideU
+                                                dV
+                                                (fromIntegral n :: RocblasInt)
+                                                strideV
+                                                dInfo
+                                                batchCount'
+                                              hipStreamSynchronize stream
+
+                                          hipMemcpyD2H (HostPtr hResidual) dResidual bytesResidual
+                                          hipMemcpyD2H (HostPtr hNSweeps) dNSweeps bytesNSweeps
+                                          hipMemcpyD2H (HostPtr hS) dS bytesS
+                                          hipMemcpyD2H (HostPtr hU) dU bytesU
+                                          hipMemcpyD2H (HostPtr hV) dV bytesV
+                                          hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                          residualVals <- peekArray batchCount hResidual
+                          nSweepsVals <- peekArray batchCount hNSweeps
+                          sAll <- peekArray (batchCount * strideSCount) hS
+                          uAll <- peekArray (batchCount * strideUCount) hU
+                          vAll <- peekArray (batchCount * strideVCount) hV
+                          infoVals <- peekArray batchCount hInfo
+                          let batchSlice stride idx vals = take stride (drop (idx * stride) vals)
+                              batchReport idx =
+                                let residualVal = residualVals !! idx
+                                    nSweeps = nSweepsVals !! idx
+                                    sVals = batchSlice strideSCount idx sAll
+                                    uVals = batchSlice strideUCount idx uAll
+                                    vVals = batchSlice strideVCount idx vAll
+                                    infoVal = infoVals !! idx
+                                    us = matMulColMajorCFloat n n n uVals (diagColMajorCFloat sVals)
+                                    recon = matMulColMajorCFloat n n n us vVals
+                                    uGram = gramMatrixColMajorCFloat n n uVals
+                                    vGram = gramMatrixColMajorCFloat n n vVals
+                                    ok = infoVal == 0
+                                      && approxCFloatWithTol 1.0e-3 residualVal (CFloat 0)
+                                      && nSweeps >= 0 && nSweeps <= maxSweeps
+                                      && approxVecWithTol 1.0e-3 sVals (expectedSingulars !! idx)
+                                      && approxVecWithTol 1.0e-3 recon (expectedMatrices !! idx)
+                                      && approxVecWithTol 1.0e-3 uGram identity2
+                                      && approxVecWithTol 1.0e-3 vGram identity2
+                                 in (ok, "batch=" <> show idx <> ", residual=" <> show residualVal <> ", sweeps=" <> show nSweeps <> ", s=" <> show sVals <> ", recon=" <> show recon <> ", uGram=" <> show uGram <> ", vGram=" <> show vGram <> ", info=" <> show infoVal)
+                              reports = [batchReport idx | idx <- [0 .. batchCount - 1]]
+                          if all fst reports
+                            then pure SmokePassed
+                            else fail ("rocSOLVER SGESVDJ batched mismatch: " <> intercalate "; " (map snd reports))
+
+rocsolverSgesvdjStridedBatchedSmoke :: IO SmokeResult
+rocsolverSgesvdjStridedBatchedSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let batchCount = 2 :: Int
+              n = 2 :: Int
+              maxSweeps = 100 :: RocblasInt
+              strideACount = n * n
+              strideSCount = n
+              strideUCount = n * n
+              strideVCount = n * n
+              aBatch0 = fmap CFloat [3, 0, 0, 1]
+              aBatch1 = fmap CFloat [4, 0, 0, 2]
+              expectedSingulars = [fmap CFloat [3, 1], fmap CFloat [4, 2]]
+              expectedMatrices = [aBatch0, aBatch1]
+              identity2 = fmap CFloat [1, 0, 0, 1]
+              bytesA = fromIntegral (batchCount * strideACount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesResidual = fromIntegral (batchCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesNSweeps = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesS = fromIntegral (batchCount * strideSCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesU = fromIntegral (batchCount * strideUCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesV = fromIntegral (batchCount * strideVCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesInfo = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              strideA = fromIntegral strideACount :: RocblasStride
+              strideS = fromIntegral strideSCount :: RocblasStride
+              strideU = fromIntegral strideUCount :: RocblasStride
+              strideV = fromIntegral strideVCount :: RocblasStride
+              batchCount' = fromIntegral batchCount :: RocblasInt
+
+          bracket (mallocArray (batchCount * strideACount) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray batchCount :: IO (Ptr CFloat)) free $ \hResidual ->
+              bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hNSweeps ->
+                bracket (mallocArray (batchCount * strideSCount) :: IO (Ptr CFloat)) free $ \hS ->
+                  bracket (mallocArray (batchCount * strideUCount) :: IO (Ptr CFloat)) free $ \hU ->
+                    bracket (mallocArray (batchCount * strideVCount) :: IO (Ptr CFloat)) free $ \hV ->
+                      bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                        pokeArray hA (aBatch0 <> aBatch1)
+
+                        bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                          bracket (hipMallocBytes bytesResidual :: IO (DevicePtr CFloat)) hipFree $ \dResidual ->
+                            bracket (hipMallocBytes bytesNSweeps :: IO (DevicePtr RocblasInt)) hipFree $ \dNSweeps ->
+                              bracket (hipMallocBytes bytesS :: IO (DevicePtr CFloat)) hipFree $ \dS ->
+                                bracket (hipMallocBytes bytesU :: IO (DevicePtr CFloat)) hipFree $ \dU ->
+                                  bracket (hipMallocBytes bytesV :: IO (DevicePtr CFloat)) hipFree $ \dV ->
+                                    bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                                      hipMemcpyH2D dA (HostPtr hA) bytesA
+
+                                      bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                        withRocblasHandle $ \handle -> do
+                                          rocblasSetStream handle stream
+                                          rocsolverSgesvdjStridedBatched
+                                            handle
+                                            RocblasSvectSingular
+                                            RocblasSvectSingular
+                                            (fromIntegral n :: RocblasInt)
+                                            (fromIntegral n :: RocblasInt)
+                                            dA
+                                            (fromIntegral n :: RocblasInt)
+                                            strideA
+                                            0.0
+                                            dResidual
+                                            maxSweeps
+                                            dNSweeps
+                                            dS
+                                            strideS
+                                            dU
+                                            (fromIntegral n :: RocblasInt)
+                                            strideU
+                                            dV
+                                            (fromIntegral n :: RocblasInt)
+                                            strideV
+                                            dInfo
+                                            batchCount'
+                                          hipStreamSynchronize stream
+
+                                      hipMemcpyD2H (HostPtr hResidual) dResidual bytesResidual
+                                      hipMemcpyD2H (HostPtr hNSweeps) dNSweeps bytesNSweeps
+                                      hipMemcpyD2H (HostPtr hS) dS bytesS
+                                      hipMemcpyD2H (HostPtr hU) dU bytesU
+                                      hipMemcpyD2H (HostPtr hV) dV bytesV
+                                      hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                        residualVals <- peekArray batchCount hResidual
+                        nSweepsVals <- peekArray batchCount hNSweeps
+                        sAll <- peekArray (batchCount * strideSCount) hS
+                        uAll <- peekArray (batchCount * strideUCount) hU
+                        vAll <- peekArray (batchCount * strideVCount) hV
+                        infoVals <- peekArray batchCount hInfo
+                        let batchSlice stride idx vals = take stride (drop (idx * stride) vals)
+                            batchReport idx =
+                              let residualVal = residualVals !! idx
+                                  nSweeps = nSweepsVals !! idx
+                                  sVals = batchSlice strideSCount idx sAll
+                                  uVals = batchSlice strideUCount idx uAll
+                                  vVals = batchSlice strideVCount idx vAll
+                                  infoVal = infoVals !! idx
+                                  us = matMulColMajorCFloat n n n uVals (diagColMajorCFloat sVals)
+                                  recon = matMulColMajorCFloat n n n us vVals
+                                  uGram = gramMatrixColMajorCFloat n n uVals
+                                  vGram = gramMatrixColMajorCFloat n n vVals
+                                  ok = infoVal == 0
+                                    && approxCFloatWithTol 1.0e-3 residualVal (CFloat 0)
+                                    && nSweeps >= 0 && nSweeps <= maxSweeps
+                                    && approxVecWithTol 1.0e-3 sVals (expectedSingulars !! idx)
+                                    && approxVecWithTol 1.0e-3 recon (expectedMatrices !! idx)
+                                    && approxVecWithTol 1.0e-3 uGram identity2
+                                    && approxVecWithTol 1.0e-3 vGram identity2
+                               in (ok, "batch=" <> show idx <> ", residual=" <> show residualVal <> ", sweeps=" <> show nSweeps <> ", s=" <> show sVals <> ", recon=" <> show recon <> ", uGram=" <> show uGram <> ", vGram=" <> show vGram <> ", info=" <> show infoVal)
+                            reports = [batchReport idx | idx <- [0 .. batchCount - 1]]
+                        if all fst reports
+                          then pure SmokePassed
+                          else fail ("rocSOLVER SGESVDJ strided-batched mismatch: " <> intercalate "; " (map snd reports))
+
+rocsolverSgesvdjSmoke :: IO SmokeResult
+rocsolverSgesvdjSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let n = 2 :: Int
+              maxSweeps = 100 :: RocblasInt
+              aOriginal = fmap CFloat [3, 0, 0, 1]
+              expectedS = fmap CFloat [3, 1]
+              identity2 = fmap CFloat [1, 0, 0, 1]
+              bytesA = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesResidual = fromIntegral (sizeOf (undefined :: CFloat)) :: CSize
+              bytesNSweeps = fromIntegral (sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesS = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesU = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesV = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesInfo = fromIntegral (sizeOf (undefined :: RocblasInt)) :: CSize
+
+          bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray n :: IO (Ptr CFloat)) free $ \hS ->
+              bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hU ->
+                bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hV ->
+                  bracket (mallocArray 1 :: IO (Ptr CFloat)) free $ \hResidual ->
+                    bracket (mallocArray 1 :: IO (Ptr RocblasInt)) free $ \hNSweeps ->
+                      bracket (mallocArray 1 :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                        pokeArray hA aOriginal
+
+                        bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                          bracket (hipMallocBytes bytesResidual :: IO (DevicePtr CFloat)) hipFree $ \dResidual ->
+                            bracket (hipMallocBytes bytesNSweeps :: IO (DevicePtr RocblasInt)) hipFree $ \dNSweeps ->
+                              bracket (hipMallocBytes bytesS :: IO (DevicePtr CFloat)) hipFree $ \dS ->
+                                bracket (hipMallocBytes bytesU :: IO (DevicePtr CFloat)) hipFree $ \dU ->
+                                  bracket (hipMallocBytes bytesV :: IO (DevicePtr CFloat)) hipFree $ \dV ->
+                                    bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                                      hipMemcpyH2D dA (HostPtr hA) bytesA
+
+                                      bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                        withRocblasHandle $ \handle -> do
+                                          rocblasSetStream handle stream
+                                          rocsolverSgesvdj
+                                            handle
+                                            RocblasSvectSingular
+                                            RocblasSvectSingular
+                                            (fromIntegral n :: RocblasInt)
+                                            (fromIntegral n :: RocblasInt)
+                                            dA
+                                            (fromIntegral n :: RocblasInt)
+                                            0.0
+                                            dResidual
+                                            maxSweeps
+                                            dNSweeps
+                                            dS
+                                            dU
+                                            (fromIntegral n :: RocblasInt)
+                                            dV
+                                            (fromIntegral n :: RocblasInt)
+                                            dInfo
+                                          hipStreamSynchronize stream
+
+                                      hipMemcpyD2H (HostPtr hResidual) dResidual bytesResidual
+                                      hipMemcpyD2H (HostPtr hNSweeps) dNSweeps bytesNSweeps
+                                      hipMemcpyD2H (HostPtr hS) dS bytesS
+                                      hipMemcpyD2H (HostPtr hU) dU bytesU
+                                      hipMemcpyD2H (HostPtr hV) dV bytesV
+                                      hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                        residualVals <- peekArray 1 hResidual
+                        nSweepsVals <- peekArray 1 hNSweeps
+                        sVals <- peekArray n hS
+                        uVals <- peekArray (n * n) hU
+                        vVals <- peekArray (n * n) hV
+                        infoVals <- peekArray 1 hInfo
+                        let infoOk = case infoVals of
+                              [infoVal] -> infoVal == 0
+                              _ -> False
+                            residualOk = case residualVals of
+                              [residualVal] -> approxCFloatWithTol 1.0e-3 residualVal (CFloat 0)
+                              _ -> False
+                            sweepsOk = case nSweepsVals of
+                              [nSweeps] -> nSweeps >= 0 && nSweeps <= maxSweeps
+                              _ -> False
+                            us = matMulColMajorCFloat n n n uVals (diagColMajorCFloat sVals)
+                            recon = matMulColMajorCFloat n n n us vVals
+                            uGram = gramMatrixColMajorCFloat n n uVals
+                            vGram = gramMatrixColMajorCFloat n n vVals
+                        if infoOk
+                            && residualOk
+                            && sweepsOk
+                            && approxVecWithTol 1.0e-3 sVals expectedS
+                            && approxVecWithTol 1.0e-3 recon aOriginal
+                            && approxVecWithTol 1.0e-3 uGram identity2
+                            && approxVecWithTol 1.0e-3 vGram identity2
+                          then pure SmokePassed
+                          else fail ("rocSOLVER SGESVDJ mismatch: residual=" <> show residualVals <> ", sweeps=" <> show nSweepsVals <> ", s=" <> show sVals <> ", recon=" <> show recon <> ", uGram=" <> show uGram <> ", vGram=" <> show vGram <> ", info=" <> show infoVals)
+
+rocsolverSgesvdxSmoke :: IO SmokeResult
+rocsolverSgesvdxSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let n = 2 :: Int
+              k = 1 :: Int
+              aOriginal = fmap CFloat [3, 0, 0, 1]
+              expectedS = [CFloat 3]
+              expectedPartial = fmap CFloat [3, 0, 0, 0]
+              identity1 = [CFloat 1]
+              bytesA = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesNsv = fromIntegral (sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesS = fromIntegral (k * sizeOf (undefined :: CFloat)) :: CSize
+              bytesU = fromIntegral (n * k * sizeOf (undefined :: CFloat)) :: CSize
+              bytesV = fromIntegral (k * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesIfail = fromIntegral (n * sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesInfo = fromIntegral (sizeOf (undefined :: RocblasInt)) :: CSize
+
+          bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray k :: IO (Ptr CFloat)) free $ \hS ->
+              bracket (mallocArray (n * k) :: IO (Ptr CFloat)) free $ \hU ->
+                bracket (mallocArray (k * n) :: IO (Ptr CFloat)) free $ \hV ->
+                  bracket (mallocArray 1 :: IO (Ptr RocblasInt)) free $ \hNsv ->
+                    bracket (mallocArray n :: IO (Ptr RocblasInt)) free $ \hIfail ->
+                      bracket (mallocArray 1 :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                        pokeArray hA aOriginal
+
+                        bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                          bracket (hipMallocBytes bytesNsv :: IO (DevicePtr RocblasInt)) hipFree $ \dNsv ->
+                            bracket (hipMallocBytes bytesS :: IO (DevicePtr CFloat)) hipFree $ \dS ->
+                              bracket (hipMallocBytes bytesU :: IO (DevicePtr CFloat)) hipFree $ \dU ->
+                                bracket (hipMallocBytes bytesV :: IO (DevicePtr CFloat)) hipFree $ \dV ->
+                                  bracket (hipMallocBytes bytesIfail :: IO (DevicePtr RocblasInt)) hipFree $ \dIfail ->
+                                    bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                                      hipMemcpyH2D dA (HostPtr hA) bytesA
+
+                                      bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                        withRocblasHandle $ \handle -> do
+                                          rocblasSetStream handle stream
+                                          rocsolverSgesvdx
+                                            handle
+                                            RocblasSvectSingular
+                                            RocblasSvectSingular
+                                            RocblasSrangeIndex
+                                            (fromIntegral n :: RocblasInt)
+                                            (fromIntegral n :: RocblasInt)
+                                            dA
+                                            (fromIntegral n :: RocblasInt)
+                                            0.0
+                                            0.0
+                                            1
+                                            1
+                                            dNsv
+                                            dS
+                                            dU
+                                            (fromIntegral n :: RocblasInt)
+                                            dV
+                                            1
+                                            dIfail
+                                            dInfo
+                                          hipStreamSynchronize stream
+
+                                      hipMemcpyD2H (HostPtr hNsv) dNsv bytesNsv
+                                      hipMemcpyD2H (HostPtr hS) dS bytesS
+                                      hipMemcpyD2H (HostPtr hU) dU bytesU
+                                      hipMemcpyD2H (HostPtr hV) dV bytesV
+                                      hipMemcpyD2H (HostPtr hIfail) dIfail bytesIfail
+                                      hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                        nsvVals <- peekArray 1 hNsv
+                        sVals <- peekArray k hS
+                        uVals <- peekArray (n * k) hU
+                        vVals <- peekArray (k * n) hV
+                        ifailVals <- peekArray n hIfail
+                        infoVals <- peekArray 1 hInfo
+                        let infoOk = case infoVals of
+                              [infoVal] -> infoVal == 0
+                              _ -> False
+                            nsvOk = case nsvVals of
+                              [nsv] -> nsv == 1
+                              _ -> False
+                            ifailOk = case ifailVals of
+                              x : _ -> x == 0
+                              _ -> False
+                            partial = matMulRightRowVector (matMulColMajorCFloat n k k uVals (diagColMajorCFloat sVals)) vVals
+                            uGram = gramMatrixColMajorCFloat n k uVals
+                            vNorm = [CFloat (sum [unCFloat x * unCFloat x | x <- vVals])]
+                        if infoOk
+                            && nsvOk
+                            && ifailOk
+                            && approxVecWithTol 1.0e-3 sVals expectedS
+                            && approxVecWithTol 1.0e-3 partial expectedPartial
+                            && approxVecWithTol 1.0e-3 uGram identity1
+                            && approxVecWithTol 1.0e-3 vNorm identity1
+                          then pure SmokePassed
+                          else fail ("rocSOLVER SGESVDX mismatch: nsv=" <> show nsvVals <> ", s=" <> show sVals <> ", partial=" <> show partial <> ", uGram=" <> show uGram <> ", vNorm=" <> show vNorm <> ", ifail=" <> show ifailVals <> ", info=" <> show infoVals)
+
+rocsolverSgesvdxValueSmoke :: IO SmokeResult
+rocsolverSgesvdxValueSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let n = 2 :: Int
+              kUpper = n
+              aOriginal = fmap CFloat [3, 0, 0, 1]
+              expectedS = [CFloat 3]
+              expectedPartial = fmap CFloat [3, 0, 0, 0]
+              identity1 = [CFloat 1]
+              bytesA = fromIntegral (n * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesNsv = fromIntegral (sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesS = fromIntegral (kUpper * sizeOf (undefined :: CFloat)) :: CSize
+              bytesU = fromIntegral (n * kUpper * sizeOf (undefined :: CFloat)) :: CSize
+              bytesV = fromIntegral (kUpper * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesIfail = fromIntegral (kUpper * sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesInfo = fromIntegral (sizeOf (undefined :: RocblasInt)) :: CSize
+
+          bracket (mallocArray (n * n) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray kUpper :: IO (Ptr CFloat)) free $ \hS ->
+              bracket (mallocArray (n * kUpper) :: IO (Ptr CFloat)) free $ \hU ->
+                bracket (mallocArray (kUpper * n) :: IO (Ptr CFloat)) free $ \hV ->
+                  bracket (mallocArray 1 :: IO (Ptr RocblasInt)) free $ \hNsv ->
+                    bracket (mallocArray kUpper :: IO (Ptr RocblasInt)) free $ \hIfail ->
+                      bracket (mallocArray 1 :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                        pokeArray hA aOriginal
+
+                        bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                          bracket (hipMallocBytes bytesNsv :: IO (DevicePtr RocblasInt)) hipFree $ \dNsv ->
+                            bracket (hipMallocBytes bytesS :: IO (DevicePtr CFloat)) hipFree $ \dS ->
+                              bracket (hipMallocBytes bytesU :: IO (DevicePtr CFloat)) hipFree $ \dU ->
+                                bracket (hipMallocBytes bytesV :: IO (DevicePtr CFloat)) hipFree $ \dV ->
+                                  bracket (hipMallocBytes bytesIfail :: IO (DevicePtr RocblasInt)) hipFree $ \dIfail ->
+                                    bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                                      hipMemcpyH2D dA (HostPtr hA) bytesA
+
+                                      bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                        withRocblasHandle $ \handle -> do
+                                          rocblasSetStream handle stream
+                                          rocsolverSgesvdx
+                                            handle
+                                            RocblasSvectSingular
+                                            RocblasSvectSingular
+                                            RocblasSrangeValue
+                                            (fromIntegral n :: RocblasInt)
+                                            (fromIntegral n :: RocblasInt)
+                                            dA
+                                            (fromIntegral n :: RocblasInt)
+                                            2.0
+                                            4.0
+                                            1
+                                            1
+                                            dNsv
+                                            dS
+                                            dU
+                                            (fromIntegral n :: RocblasInt)
+                                            dV
+                                            (fromIntegral kUpper :: RocblasInt)
+                                            dIfail
+                                            dInfo
+                                          hipStreamSynchronize stream
+
+                                      hipMemcpyD2H (HostPtr hNsv) dNsv bytesNsv
+                                      hipMemcpyD2H (HostPtr hS) dS bytesS
+                                      hipMemcpyD2H (HostPtr hU) dU bytesU
+                                      hipMemcpyD2H (HostPtr hV) dV bytesV
+                                      hipMemcpyD2H (HostPtr hIfail) dIfail bytesIfail
+                                      hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                        nsvVals <- peekArray 1 hNsv
+                        sAll <- peekArray kUpper hS
+                        uAll <- peekArray (n * kUpper) hU
+                        vAll <- peekArray (kUpper * n) hV
+                        ifailAll <- peekArray kUpper hIfail
+                        infoVals <- peekArray 1 hInfo
+                        let selected = case nsvVals of
+                              [nsv] -> fromIntegral nsv
+                              _ -> -1
+                            sVals = take selected sAll
+                            uVals = take (n * selected) uAll
+                            vVals = extractLeadingRowsColMajor kUpper n selected vAll
+                            ifailVals = take selected ifailAll
+                            infoOk = case infoVals of
+                              [infoVal] -> infoVal == 0
+                              _ -> False
+                            nsvOk = case nsvVals of
+                              [nsv] -> nsv == 1
+                              _ -> False
+                            ifailOk = not (null ifailVals) && all (== 0) ifailVals
+                            partial = matMulRightRowVector (matMulColMajorCFloat n selected selected uVals (diagColMajorCFloat sVals)) vVals
+                            uGram = gramMatrixColMajorCFloat n selected uVals
+                            vNorm = [CFloat (sum [unCFloat x * unCFloat x | x <- vVals])]
+                        if infoOk
+                            && nsvOk
+                            && ifailOk
+                            && approxVecWithTol 1.0e-3 sVals expectedS
+                            && approxVecWithTol 1.0e-3 partial expectedPartial
+                            && approxVecWithTol 1.0e-3 uGram identity1
+                            && approxVecWithTol 1.0e-3 vNorm identity1
+                          then pure SmokePassed
+                          else fail ("rocSOLVER SGESVDX value-range mismatch: nsv=" <> show nsvVals <> ", s=" <> show sVals <> ", partial=" <> show partial <> ", uGram=" <> show uGram <> ", vNorm=" <> show vNorm <> ", ifail=" <> show ifailVals <> ", info=" <> show infoVals)
+
+rocsolverSgesvdxBatchedValueSmoke :: IO SmokeResult
+rocsolverSgesvdxBatchedValueSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let batchCount = 2 :: Int
+              n = 2 :: Int
+              kUpper = n
+              ldv = kUpper
+              strideSCount = kUpper
+              strideUCount = n * kUpper
+              strideVCount = ldv * n
+              strideFCount = kUpper
+              aBatch0 = fmap CFloat [3, 0, 0, 1]
+              aBatch1 = fmap CFloat [4, 0, 0, 2]
+              expectedNsv = [1, 2] :: [RocblasInt]
+              expectedSingulars = [[CFloat 3], fmap CFloat [4, 2]]
+              expectedPartials = [fmap CFloat [3, 0, 0, 0], fmap CFloat [4, 0, 0, 2]]
+              expectedGrams = [[CFloat 1], fmap CFloat [1, 0, 0, 1]]
+              matrixElems = n * n
+              matrixBytesInt = matrixElems * sizeOf (undefined :: CFloat)
+              bytesAFlat = fromIntegral (batchCount * matrixBytesInt) :: CSize
+              bytesAPtrs = fromIntegral (batchCount * sizeOf (undefined :: Ptr CFloat)) :: CSize
+              bytesNsv = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesS = fromIntegral (batchCount * strideSCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesU = fromIntegral (batchCount * strideUCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesV = fromIntegral (batchCount * strideVCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesIfail = fromIntegral (batchCount * strideFCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesInfo = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              strideS = fromIntegral strideSCount :: RocblasStride
+              strideU = fromIntegral strideUCount :: RocblasStride
+              strideV = fromIntegral strideVCount :: RocblasStride
+              strideF = fromIntegral strideFCount :: RocblasStride
+              batchCount' = fromIntegral batchCount :: RocblasInt
+
+          bracket (mallocArray (batchCount * matrixElems) :: IO (Ptr CFloat)) free $ \hAFlat ->
+            bracket (mallocArray batchCount :: IO (Ptr (Ptr CFloat))) free $ \hAPtrs ->
+              bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hNsv ->
+                bracket (mallocArray (batchCount * strideSCount) :: IO (Ptr CFloat)) free $ \hS ->
+                  bracket (mallocArray (batchCount * strideUCount) :: IO (Ptr CFloat)) free $ \hU ->
+                    bracket (mallocArray (batchCount * strideVCount) :: IO (Ptr CFloat)) free $ \hV ->
+                      bracket (mallocArray (batchCount * strideFCount) :: IO (Ptr RocblasInt)) free $ \hIfail ->
+                        bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                          pokeArray hAFlat (aBatch0 <> aBatch1)
+
+                          bracket (hipMallocBytes bytesAFlat :: IO (DevicePtr CFloat)) hipFree $ \dAFlat ->
+                            bracket (hipMallocBytes bytesAPtrs :: IO (DevicePtr (Ptr CFloat))) hipFree $ \dAPtrs ->
+                              bracket (hipMallocBytes bytesNsv :: IO (DevicePtr RocblasInt)) hipFree $ \dNsv ->
+                                bracket (hipMallocBytes bytesS :: IO (DevicePtr CFloat)) hipFree $ \dS ->
+                                  bracket (hipMallocBytes bytesU :: IO (DevicePtr CFloat)) hipFree $ \dU ->
+                                    bracket (hipMallocBytes bytesV :: IO (DevicePtr CFloat)) hipFree $ \dV ->
+                                      bracket (hipMallocBytes bytesIfail :: IO (DevicePtr RocblasInt)) hipFree $ \dIfail ->
+                                        bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                                          hipMemcpyH2D dAFlat (HostPtr hAFlat) bytesAFlat
+                                          let DevicePtr pAFlat = dAFlat
+                                              aPtrs = [pAFlat `plusPtr` (idx * matrixBytesInt) | idx <- [0 .. batchCount - 1]]
+                                          pokeArray hAPtrs aPtrs
+                                          hipMemcpyH2D dAPtrs (HostPtr hAPtrs) bytesAPtrs
+
+                                          bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                            withRocblasHandle $ \handle -> do
+                                              rocblasSetStream handle stream
+                                              rocsolverSgesvdxBatched
+                                                handle
+                                                RocblasSvectSingular
+                                                RocblasSvectSingular
+                                                RocblasSrangeValue
+                                                (fromIntegral n :: RocblasInt)
+                                                (fromIntegral n :: RocblasInt)
+                                                dAPtrs
+                                                (fromIntegral n :: RocblasInt)
+                                                1.5
+                                                5.0
+                                                1
+                                                1
+                                                dNsv
+                                                dS
+                                                strideS
+                                                dU
+                                                (fromIntegral n :: RocblasInt)
+                                                strideU
+                                                dV
+                                                (fromIntegral ldv :: RocblasInt)
+                                                strideV
+                                                dIfail
+                                                strideF
+                                                dInfo
+                                                batchCount'
+                                              hipStreamSynchronize stream
+
+                                          hipMemcpyD2H (HostPtr hNsv) dNsv bytesNsv
+                                          hipMemcpyD2H (HostPtr hS) dS bytesS
+                                          hipMemcpyD2H (HostPtr hU) dU bytesU
+                                          hipMemcpyD2H (HostPtr hV) dV bytesV
+                                          hipMemcpyD2H (HostPtr hIfail) dIfail bytesIfail
+                                          hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                          nsvVals <- peekArray batchCount hNsv
+                          sAll <- peekArray (batchCount * strideSCount) hS
+                          uAll <- peekArray (batchCount * strideUCount) hU
+                          vAll <- peekArray (batchCount * strideVCount) hV
+                          ifailAll <- peekArray (batchCount * strideFCount) hIfail
+                          infoVals <- peekArray batchCount hInfo
+                          let batchSlice stride idx vals = take stride (drop (idx * stride) vals)
+                              batchReport idx =
+                                let nsvVal = nsvVals !! idx
+                                    selected = fromIntegral nsvVal :: Int
+                                    sVals = take selected (batchSlice strideSCount idx sAll)
+                                    uVals = take (n * selected) (batchSlice strideUCount idx uAll)
+                                    vVals = extractLeadingRowsColMajor ldv n selected (batchSlice strideVCount idx vAll)
+                                    ifailVals = take selected (batchSlice strideFCount idx ifailAll)
+                                    infoVal = infoVals !! idx
+                                    us = matMulColMajorCFloat n selected selected uVals (diagColMajorCFloat sVals)
+                                    partial = matMulColMajorCFloat n selected n us vVals
+                                    uGram = gramMatrixColMajorCFloat n selected uVals
+                                    vGram = rowGramMatrixColMajorCFloat selected n vVals
+                                    ok = infoVal == 0
+                                      && nsvVal == expectedNsv !! idx
+                                      && all (== 0) ifailVals
+                                      && approxVecWithTol 1.0e-3 sVals (expectedSingulars !! idx)
+                                      && approxVecWithTol 1.0e-3 partial (expectedPartials !! idx)
+                                      && approxVecWithTol 1.0e-3 uGram (expectedGrams !! idx)
+                                      && approxVecWithTol 1.0e-3 vGram (expectedGrams !! idx)
+                                 in (ok, "batch=" <> show idx <> ", nsv=" <> show nsvVal <> ", s=" <> show sVals <> ", partial=" <> show partial <> ", uGram=" <> show uGram <> ", vGram=" <> show vGram <> ", ifail=" <> show ifailVals <> ", info=" <> show infoVal)
+                              reports = [batchReport idx | idx <- [0 .. batchCount - 1]]
+                          if all fst reports
+                            then pure SmokePassed
+                            else fail ("rocSOLVER SGESVDX batched value-range mismatch: " <> intercalate "; " (map snd reports))
+
+rocsolverSgesvdxBatchedSmoke :: IO SmokeResult
+rocsolverSgesvdxBatchedSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let batchCount = 2 :: Int
+              n = 2 :: Int
+              k = 1 :: Int
+              ldv = k
+              strideSCount = k
+              strideUCount = n * k
+              strideVCount = ldv * n
+              strideFCount = n
+              aBatch0 = fmap CFloat [3, 0, 0, 1]
+              aBatch1 = fmap CFloat [4, 0, 0, 2]
+              expectedSingulars = [[CFloat 3], [CFloat 4]]
+              expectedPartials = [fmap CFloat [3, 0, 0, 0], fmap CFloat [4, 0, 0, 0]]
+              identity1 = [CFloat 1]
+              matrixElems = n * n
+              matrixBytesInt = matrixElems * sizeOf (undefined :: CFloat)
+              bytesAFlat = fromIntegral (batchCount * matrixBytesInt) :: CSize
+              bytesAPtrs = fromIntegral (batchCount * sizeOf (undefined :: Ptr CFloat)) :: CSize
+              bytesNsv = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesS = fromIntegral (batchCount * strideSCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesU = fromIntegral (batchCount * strideUCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesV = fromIntegral (batchCount * strideVCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesIfail = fromIntegral (batchCount * strideFCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesInfo = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              strideS = fromIntegral strideSCount :: RocblasStride
+              strideU = fromIntegral strideUCount :: RocblasStride
+              strideV = fromIntegral strideVCount :: RocblasStride
+              strideF = fromIntegral strideFCount :: RocblasStride
+              batchCount' = fromIntegral batchCount :: RocblasInt
+
+          bracket (mallocArray (batchCount * matrixElems) :: IO (Ptr CFloat)) free $ \hAFlat ->
+            bracket (mallocArray batchCount :: IO (Ptr (Ptr CFloat))) free $ \hAPtrs ->
+              bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hNsv ->
+                bracket (mallocArray (batchCount * strideSCount) :: IO (Ptr CFloat)) free $ \hS ->
+                  bracket (mallocArray (batchCount * strideUCount) :: IO (Ptr CFloat)) free $ \hU ->
+                    bracket (mallocArray (batchCount * strideVCount) :: IO (Ptr CFloat)) free $ \hV ->
+                      bracket (mallocArray (batchCount * strideFCount) :: IO (Ptr RocblasInt)) free $ \hIfail ->
+                        bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                          pokeArray hAFlat (aBatch0 <> aBatch1)
+
+                          bracket (hipMallocBytes bytesAFlat :: IO (DevicePtr CFloat)) hipFree $ \dAFlat ->
+                            bracket (hipMallocBytes bytesAPtrs :: IO (DevicePtr (Ptr CFloat))) hipFree $ \dAPtrs ->
+                              bracket (hipMallocBytes bytesNsv :: IO (DevicePtr RocblasInt)) hipFree $ \dNsv ->
+                                bracket (hipMallocBytes bytesS :: IO (DevicePtr CFloat)) hipFree $ \dS ->
+                                  bracket (hipMallocBytes bytesU :: IO (DevicePtr CFloat)) hipFree $ \dU ->
+                                    bracket (hipMallocBytes bytesV :: IO (DevicePtr CFloat)) hipFree $ \dV ->
+                                      bracket (hipMallocBytes bytesIfail :: IO (DevicePtr RocblasInt)) hipFree $ \dIfail ->
+                                        bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                                          hipMemcpyH2D dAFlat (HostPtr hAFlat) bytesAFlat
+                                          let DevicePtr pAFlat = dAFlat
+                                              aPtrs = [pAFlat `plusPtr` (idx * matrixBytesInt) | idx <- [0 .. batchCount - 1]]
+                                          pokeArray hAPtrs aPtrs
+                                          hipMemcpyH2D dAPtrs (HostPtr hAPtrs) bytesAPtrs
+
+                                          bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                            withRocblasHandle $ \handle -> do
+                                              rocblasSetStream handle stream
+                                              rocsolverSgesvdxBatched
+                                                handle
+                                                RocblasSvectSingular
+                                                RocblasSvectSingular
+                                                RocblasSrangeIndex
+                                                (fromIntegral n :: RocblasInt)
+                                                (fromIntegral n :: RocblasInt)
+                                                dAPtrs
+                                                (fromIntegral n :: RocblasInt)
+                                                0.0
+                                                0.0
+                                                1
+                                                1
+                                                dNsv
+                                                dS
+                                                strideS
+                                                dU
+                                                (fromIntegral n :: RocblasInt)
+                                                strideU
+                                                dV
+                                                (fromIntegral ldv :: RocblasInt)
+                                                strideV
+                                                dIfail
+                                                strideF
+                                                dInfo
+                                                batchCount'
+                                              hipStreamSynchronize stream
+
+                                          hipMemcpyD2H (HostPtr hNsv) dNsv bytesNsv
+                                          hipMemcpyD2H (HostPtr hS) dS bytesS
+                                          hipMemcpyD2H (HostPtr hU) dU bytesU
+                                          hipMemcpyD2H (HostPtr hV) dV bytesV
+                                          hipMemcpyD2H (HostPtr hIfail) dIfail bytesIfail
+                                          hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                          nsvVals <- peekArray batchCount hNsv
+                          sAll <- peekArray (batchCount * strideSCount) hS
+                          uAll <- peekArray (batchCount * strideUCount) hU
+                          vAll <- peekArray (batchCount * strideVCount) hV
+                          ifailAll <- peekArray (batchCount * strideFCount) hIfail
+                          infoVals <- peekArray batchCount hInfo
+                          let batchSlice stride idx vals = take stride (drop (idx * stride) vals)
+                              batchReport idx =
+                                let nsvVal = nsvVals !! idx
+                                    selected = fromIntegral nsvVal :: Int
+                                    sVals = take selected (batchSlice strideSCount idx sAll)
+                                    uVals = take (n * selected) (batchSlice strideUCount idx uAll)
+                                    vVals = extractLeadingRowsColMajor ldv n selected (batchSlice strideVCount idx vAll)
+                                    ifailVals = take selected (batchSlice strideFCount idx ifailAll)
+                                    infoVal = infoVals !! idx
+                                    partial = matMulRightRowVector (matMulColMajorCFloat n selected selected uVals (diagColMajorCFloat sVals)) vVals
+                                    uGram = gramMatrixColMajorCFloat n selected uVals
+                                    vNorm = [CFloat (sum [unCFloat x * unCFloat x | x <- vVals])]
+                                    ok = infoVal == 0
+                                      && nsvVal == 1
+                                      && all (== 0) ifailVals
+                                      && approxVecWithTol 1.0e-3 sVals (expectedSingulars !! idx)
+                                      && approxVecWithTol 1.0e-3 partial (expectedPartials !! idx)
+                                      && approxVecWithTol 1.0e-3 uGram identity1
+                                      && approxVecWithTol 1.0e-3 vNorm identity1
+                                 in (ok, "batch=" <> show idx <> ", nsv=" <> show nsvVal <> ", s=" <> show sVals <> ", partial=" <> show partial <> ", uGram=" <> show uGram <> ", vNorm=" <> show vNorm <> ", ifail=" <> show ifailVals <> ", info=" <> show infoVal)
+                              reports = [batchReport idx | idx <- [0 .. batchCount - 1]]
+                          if all fst reports
+                            then pure SmokePassed
+                            else fail ("rocSOLVER SGESVDX batched mismatch: " <> intercalate "; " (map snd reports))
+
+rocsolverSgesvdxStridedBatchedValueSmoke :: IO SmokeResult
+rocsolverSgesvdxStridedBatchedValueSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let batchCount = 2 :: Int
+              n = 2 :: Int
+              kUpper = n
+              ldv = kUpper
+              strideACount = n * n
+              strideSCount = kUpper
+              strideUCount = n * kUpper
+              strideVCount = ldv * n
+              strideFCount = kUpper
+              aBatch0 = fmap CFloat [3, 0, 0, 1]
+              aBatch1 = fmap CFloat [4, 0, 0, 2]
+              expectedNsv = [1, 2] :: [RocblasInt]
+              expectedSingulars = [[CFloat 3], fmap CFloat [4, 2]]
+              expectedPartials = [fmap CFloat [3, 0, 0, 0], fmap CFloat [4, 0, 0, 2]]
+              expectedGrams = [[CFloat 1], fmap CFloat [1, 0, 0, 1]]
+              bytesA = fromIntegral (batchCount * strideACount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesNsv = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesS = fromIntegral (batchCount * strideSCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesU = fromIntegral (batchCount * strideUCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesV = fromIntegral (batchCount * strideVCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesIfail = fromIntegral (batchCount * strideFCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesInfo = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              strideA = fromIntegral strideACount :: RocblasStride
+              strideS = fromIntegral strideSCount :: RocblasStride
+              strideU = fromIntegral strideUCount :: RocblasStride
+              strideV = fromIntegral strideVCount :: RocblasStride
+              strideF = fromIntegral strideFCount :: RocblasStride
+              batchCount' = fromIntegral batchCount :: RocblasInt
+
+          bracket (mallocArray (batchCount * strideACount) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hNsv ->
+              bracket (mallocArray (batchCount * strideSCount) :: IO (Ptr CFloat)) free $ \hS ->
+                bracket (mallocArray (batchCount * strideUCount) :: IO (Ptr CFloat)) free $ \hU ->
+                  bracket (mallocArray (batchCount * strideVCount) :: IO (Ptr CFloat)) free $ \hV ->
+                    bracket (mallocArray (batchCount * strideFCount) :: IO (Ptr RocblasInt)) free $ \hIfail ->
+                      bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                        pokeArray hA (aBatch0 <> aBatch1)
+
+                        bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                          bracket (hipMallocBytes bytesNsv :: IO (DevicePtr RocblasInt)) hipFree $ \dNsv ->
+                            bracket (hipMallocBytes bytesS :: IO (DevicePtr CFloat)) hipFree $ \dS ->
+                              bracket (hipMallocBytes bytesU :: IO (DevicePtr CFloat)) hipFree $ \dU ->
+                                bracket (hipMallocBytes bytesV :: IO (DevicePtr CFloat)) hipFree $ \dV ->
+                                  bracket (hipMallocBytes bytesIfail :: IO (DevicePtr RocblasInt)) hipFree $ \dIfail ->
+                                    bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                                      hipMemcpyH2D dA (HostPtr hA) bytesA
+
+                                      bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                        withRocblasHandle $ \handle -> do
+                                          rocblasSetStream handle stream
+                                          rocsolverSgesvdxStridedBatched
+                                            handle
+                                            RocblasSvectSingular
+                                            RocblasSvectSingular
+                                            RocblasSrangeValue
+                                            (fromIntegral n :: RocblasInt)
+                                            (fromIntegral n :: RocblasInt)
+                                            dA
+                                            (fromIntegral n :: RocblasInt)
+                                            strideA
+                                            1.5
+                                            5.0
+                                            1
+                                            1
+                                            dNsv
+                                            dS
+                                            strideS
+                                            dU
+                                            (fromIntegral n :: RocblasInt)
+                                            strideU
+                                            dV
+                                            (fromIntegral ldv :: RocblasInt)
+                                            strideV
+                                            dIfail
+                                            strideF
+                                            dInfo
+                                            batchCount'
+                                          hipStreamSynchronize stream
+
+                                      hipMemcpyD2H (HostPtr hNsv) dNsv bytesNsv
+                                      hipMemcpyD2H (HostPtr hS) dS bytesS
+                                      hipMemcpyD2H (HostPtr hU) dU bytesU
+                                      hipMemcpyD2H (HostPtr hV) dV bytesV
+                                      hipMemcpyD2H (HostPtr hIfail) dIfail bytesIfail
+                                      hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                        nsvVals <- peekArray batchCount hNsv
+                        sAll <- peekArray (batchCount * strideSCount) hS
+                        uAll <- peekArray (batchCount * strideUCount) hU
+                        vAll <- peekArray (batchCount * strideVCount) hV
+                        ifailAll <- peekArray (batchCount * strideFCount) hIfail
+                        infoVals <- peekArray batchCount hInfo
+                        let batchSlice stride idx vals = take stride (drop (idx * stride) vals)
+                            batchReport idx =
+                              let nsvVal = nsvVals !! idx
+                                  selected = fromIntegral nsvVal :: Int
+                                  sVals = take selected (batchSlice strideSCount idx sAll)
+                                  uVals = take (n * selected) (batchSlice strideUCount idx uAll)
+                                  vVals = extractLeadingRowsColMajor ldv n selected (batchSlice strideVCount idx vAll)
+                                  ifailVals = take selected (batchSlice strideFCount idx ifailAll)
+                                  infoVal = infoVals !! idx
+                                  us = matMulColMajorCFloat n selected selected uVals (diagColMajorCFloat sVals)
+                                  partial = matMulColMajorCFloat n selected n us vVals
+                                  uGram = gramMatrixColMajorCFloat n selected uVals
+                                  vGram = rowGramMatrixColMajorCFloat selected n vVals
+                                  ok = infoVal == 0
+                                    && nsvVal == expectedNsv !! idx
+                                    && all (== 0) ifailVals
+                                    && approxVecWithTol 1.0e-3 sVals (expectedSingulars !! idx)
+                                    && approxVecWithTol 1.0e-3 partial (expectedPartials !! idx)
+                                    && approxVecWithTol 1.0e-3 uGram (expectedGrams !! idx)
+                                    && approxVecWithTol 1.0e-3 vGram (expectedGrams !! idx)
+                               in (ok, "batch=" <> show idx <> ", nsv=" <> show nsvVal <> ", s=" <> show sVals <> ", partial=" <> show partial <> ", uGram=" <> show uGram <> ", vGram=" <> show vGram <> ", ifail=" <> show ifailVals <> ", info=" <> show infoVal)
+                            reports = [batchReport idx | idx <- [0 .. batchCount - 1]]
+                        if all fst reports
+                          then pure SmokePassed
+                          else fail ("rocSOLVER SGESVDX strided-batched value-range mismatch: " <> intercalate "; " (map snd reports))
+
+rocsolverSgesvdxStridedBatchedSmoke :: IO SmokeResult
+rocsolverSgesvdxStridedBatchedSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocsolverSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let batchCount = 2 :: Int
+              n = 2 :: Int
+              k = 1 :: Int
+              ldv = k
+              strideACount = n * n
+              strideSCount = k
+              strideUCount = n * k
+              strideVCount = ldv * n
+              strideFCount = n
+              aBatch0 = fmap CFloat [3, 0, 0, 1]
+              aBatch1 = fmap CFloat [4, 0, 0, 2]
+              expectedSingulars = [[CFloat 3], [CFloat 4]]
+              expectedPartials = [fmap CFloat [3, 0, 0, 0], fmap CFloat [4, 0, 0, 0]]
+              identity1 = [CFloat 1]
+              bytesA = fromIntegral (batchCount * strideACount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesNsv = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesS = fromIntegral (batchCount * strideSCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesU = fromIntegral (batchCount * strideUCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesV = fromIntegral (batchCount * strideVCount * sizeOf (undefined :: CFloat)) :: CSize
+              bytesIfail = fromIntegral (batchCount * strideFCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              bytesInfo = fromIntegral (batchCount * sizeOf (undefined :: RocblasInt)) :: CSize
+              strideA = fromIntegral strideACount :: RocblasStride
+              strideS = fromIntegral strideSCount :: RocblasStride
+              strideU = fromIntegral strideUCount :: RocblasStride
+              strideV = fromIntegral strideVCount :: RocblasStride
+              strideF = fromIntegral strideFCount :: RocblasStride
+              batchCount' = fromIntegral batchCount :: RocblasInt
+
+          bracket (mallocArray (batchCount * strideACount) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hNsv ->
+              bracket (mallocArray (batchCount * strideSCount) :: IO (Ptr CFloat)) free $ \hS ->
+                bracket (mallocArray (batchCount * strideUCount) :: IO (Ptr CFloat)) free $ \hU ->
+                  bracket (mallocArray (batchCount * strideVCount) :: IO (Ptr CFloat)) free $ \hV ->
+                    bracket (mallocArray (batchCount * strideFCount) :: IO (Ptr RocblasInt)) free $ \hIfail ->
+                      bracket (mallocArray batchCount :: IO (Ptr RocblasInt)) free $ \hInfo -> do
+                        pokeArray hA (aBatch0 <> aBatch1)
+
+                        bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                          bracket (hipMallocBytes bytesNsv :: IO (DevicePtr RocblasInt)) hipFree $ \dNsv ->
+                            bracket (hipMallocBytes bytesS :: IO (DevicePtr CFloat)) hipFree $ \dS ->
+                              bracket (hipMallocBytes bytesU :: IO (DevicePtr CFloat)) hipFree $ \dU ->
+                                bracket (hipMallocBytes bytesV :: IO (DevicePtr CFloat)) hipFree $ \dV ->
+                                  bracket (hipMallocBytes bytesIfail :: IO (DevicePtr RocblasInt)) hipFree $ \dIfail ->
+                                    bracket (hipMallocBytes bytesInfo :: IO (DevicePtr RocblasInt)) hipFree $ \dInfo -> do
+                                      hipMemcpyH2D dA (HostPtr hA) bytesA
+
+                                      bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                        withRocblasHandle $ \handle -> do
+                                          rocblasSetStream handle stream
+                                          rocsolverSgesvdxStridedBatched
+                                            handle
+                                            RocblasSvectSingular
+                                            RocblasSvectSingular
+                                            RocblasSrangeIndex
+                                            (fromIntegral n :: RocblasInt)
+                                            (fromIntegral n :: RocblasInt)
+                                            dA
+                                            (fromIntegral n :: RocblasInt)
+                                            strideA
+                                            0.0
+                                            0.0
+                                            1
+                                            1
+                                            dNsv
+                                            dS
+                                            strideS
+                                            dU
+                                            (fromIntegral n :: RocblasInt)
+                                            strideU
+                                            dV
+                                            (fromIntegral ldv :: RocblasInt)
+                                            strideV
+                                            dIfail
+                                            strideF
+                                            dInfo
+                                            batchCount'
+                                          hipStreamSynchronize stream
+
+                                      hipMemcpyD2H (HostPtr hNsv) dNsv bytesNsv
+                                      hipMemcpyD2H (HostPtr hS) dS bytesS
+                                      hipMemcpyD2H (HostPtr hU) dU bytesU
+                                      hipMemcpyD2H (HostPtr hV) dV bytesV
+                                      hipMemcpyD2H (HostPtr hIfail) dIfail bytesIfail
+                                      hipMemcpyD2H (HostPtr hInfo) dInfo bytesInfo
+
+                        nsvVals <- peekArray batchCount hNsv
+                        sAll <- peekArray (batchCount * strideSCount) hS
+                        uAll <- peekArray (batchCount * strideUCount) hU
+                        vAll <- peekArray (batchCount * strideVCount) hV
+                        ifailAll <- peekArray (batchCount * strideFCount) hIfail
+                        infoVals <- peekArray batchCount hInfo
+                        let batchSlice stride idx vals = take stride (drop (idx * stride) vals)
+                            batchReport idx =
+                              let nsvVal = nsvVals !! idx
+                                  selected = fromIntegral nsvVal :: Int
+                                  sVals = take selected (batchSlice strideSCount idx sAll)
+                                  uVals = take (n * selected) (batchSlice strideUCount idx uAll)
+                                  vVals = extractLeadingRowsColMajor ldv n selected (batchSlice strideVCount idx vAll)
+                                  ifailVals = take selected (batchSlice strideFCount idx ifailAll)
+                                  infoVal = infoVals !! idx
+                                  partial = matMulRightRowVector (matMulColMajorCFloat n selected selected uVals (diagColMajorCFloat sVals)) vVals
+                                  uGram = gramMatrixColMajorCFloat n selected uVals
+                                  vNorm = [CFloat (sum [unCFloat x * unCFloat x | x <- vVals])]
+                                  ok = infoVal == 0
+                                    && nsvVal == 1
+                                    && all (== 0) ifailVals
+                                    && approxVecWithTol 1.0e-3 sVals (expectedSingulars !! idx)
+                                    && approxVecWithTol 1.0e-3 partial (expectedPartials !! idx)
+                                    && approxVecWithTol 1.0e-3 uGram identity1
+                                    && approxVecWithTol 1.0e-3 vNorm identity1
+                               in (ok, "batch=" <> show idx <> ", nsv=" <> show nsvVal <> ", s=" <> show sVals <> ", partial=" <> show partial <> ", uGram=" <> show uGram <> ", vNorm=" <> show vNorm <> ", ifail=" <> show ifailVals <> ", info=" <> show infoVal)
+                            reports = [batchReport idx | idx <- [0 .. batchCount - 1]]
+                        if all fst reports
+                          then pure SmokePassed
+                          else fail ("rocSOLVER SGESVDX strided-batched mismatch: " <> intercalate "; " (map snd reports))
+
 rocblasSmoke :: IO SmokeResult
 rocblasSmoke = do
   gpuReady <- requireGpu
@@ -1182,6 +2771,368 @@ rocblasSmoke = do
                 if approxVec out expected
                   then pure SmokePassed
                   else fail ("rocBLAS mismatch: expected=" <> show expected <> ", got=" <> show out)
+
+rocblasBlas1CoreSmoke :: IO SmokeResult
+rocblasBlas1CoreSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocblasSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let n = 3 :: Int
+              xVals = fmap CFloat [1, 2, 3]
+              yVals = fmap CFloat [4, 5, 6]
+              zExpected = fmap CFloat [2, 4, 6]
+              bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+              expectedDot = 64.0 :: Float
+              expectedAsum = 12.0 :: Float
+              expectedNrm2 = sqrt 56.0 :: Float
+
+          bracket (mallocArray n) free $ \hX ->
+            bracket (mallocArray n) free $ \hY ->
+              bracket (mallocArray n) free $ \hZ -> do
+                pokeArray hX xVals
+                pokeArray hY yVals
+                pokeArray hZ (replicate n (CFloat 0))
+
+                bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dX ->
+                  bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dY ->
+                    bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dZ -> do
+                      hipMemcpyH2D dX (HostPtr hX) bytes
+                      hipMemcpyH2D dY (HostPtr hY) bytes
+                      hipMemcpyH2D dZ (HostPtr hZ) bytes
+
+                      (dotVal, asumVal, nrm2Val) <-
+                        bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                          withRocblasHandle $ \handle -> do
+                            rocblasSetStream handle stream
+                            rocblasScopy handle (fromIntegral n :: RocblasInt) dX 1 dZ 1
+                            rocblasSscal handle (fromIntegral n :: RocblasInt) 2.0 dZ 1
+                            dotVal <- rocblasSdot handle (fromIntegral n :: RocblasInt) dZ 1 dY 1
+                            asumVal <- rocblasSasum handle (fromIntegral n :: RocblasInt) dZ 1
+                            nrm2Val <- rocblasSnrm2 handle (fromIntegral n :: RocblasInt) dZ 1
+                            hipStreamSynchronize stream
+                            pure (dotVal, asumVal, nrm2Val)
+
+                      hipMemcpyD2H (HostPtr hZ) dZ bytes
+                      zOut <- peekArray n hZ
+                      if approxVecWithTol 1.0e-3 zOut zExpected
+                        && abs (dotVal - expectedDot) <= 1.0e-3
+                        && abs (asumVal - expectedAsum) <= 1.0e-3
+                        && abs (nrm2Val - expectedNrm2) <= 1.0e-3
+                        then pure SmokePassed
+                        else fail ("rocBLAS BLAS1 core mismatch: z=" <> show zOut <> ", dot=" <> show dotVal <> ", asum=" <> show asumVal <> ", nrm2=" <> show nrm2Val)
+
+rocblasGemvBatchedSmoke :: IO SmokeResult
+rocblasGemvBatchedSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocblasSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let batchCount = 2 :: Int
+              m = 2 :: Int
+              n = 2 :: Int
+              matrixElems = m * n
+              vecElems = n
+              outElems = m
+              matrixBytesInt = matrixElems * sizeOf (undefined :: CFloat)
+              vecBytesInt = vecElems * sizeOf (undefined :: CFloat)
+              outBytesInt = outElems * sizeOf (undefined :: CFloat)
+              a0 = fmap CFloat [1, 3, 2, 4]
+              a1 = fmap CFloat [2, 0, 0, 3]
+              x0 = fmap CFloat [5, 6]
+              x1 = fmap CFloat [7, 8]
+              yExpected = fmap CFloat [17, 39, 14, 24]
+              bytesAFlat = fromIntegral (batchCount * matrixBytesInt) :: CSize
+              bytesXFlat = fromIntegral (batchCount * vecBytesInt) :: CSize
+              bytesYFlat = fromIntegral (batchCount * outBytesInt) :: CSize
+              bytesAPtrs = fromIntegral (batchCount * sizeOf (undefined :: Ptr CFloat)) :: CSize
+              bytesXPtrs = fromIntegral (batchCount * sizeOf (undefined :: Ptr CFloat)) :: CSize
+              bytesYPtrs = fromIntegral (batchCount * sizeOf (undefined :: Ptr CFloat)) :: CSize
+              batchCount' = fromIntegral batchCount :: RocblasInt
+
+          bracket (mallocArray (batchCount * matrixElems) :: IO (Ptr CFloat)) free $ \hAFlat ->
+            bracket (mallocArray (batchCount * vecElems) :: IO (Ptr CFloat)) free $ \hXFlat ->
+              bracket (mallocArray (batchCount * outElems) :: IO (Ptr CFloat)) free $ \hYFlat ->
+                bracket (mallocArray batchCount :: IO (Ptr (Ptr CFloat))) free $ \hAPtrs ->
+                  bracket (mallocArray batchCount :: IO (Ptr (Ptr CFloat))) free $ \hXPtrs ->
+                    bracket (mallocArray batchCount :: IO (Ptr (Ptr CFloat))) free $ \hYPtrs -> do
+                      pokeArray hAFlat (a0 <> a1)
+                      pokeArray hXFlat (x0 <> x1)
+                      pokeArray hYFlat (replicate (batchCount * outElems) (CFloat 0))
+
+                      bracket (hipMallocBytes bytesAFlat :: IO (DevicePtr CFloat)) hipFree $ \dAFlat ->
+                        bracket (hipMallocBytes bytesXFlat :: IO (DevicePtr CFloat)) hipFree $ \dXFlat ->
+                          bracket (hipMallocBytes bytesYFlat :: IO (DevicePtr CFloat)) hipFree $ \dYFlat ->
+                            bracket (hipMallocBytes bytesAPtrs :: IO (DevicePtr (Ptr CFloat))) hipFree $ \dAPtrs ->
+                              bracket (hipMallocBytes bytesXPtrs :: IO (DevicePtr (Ptr CFloat))) hipFree $ \dXPtrs ->
+                                bracket (hipMallocBytes bytesYPtrs :: IO (DevicePtr (Ptr CFloat))) hipFree $ \dYPtrs -> do
+                                  hipMemcpyH2D dAFlat (HostPtr hAFlat) bytesAFlat
+                                  hipMemcpyH2D dXFlat (HostPtr hXFlat) bytesXFlat
+                                  hipMemcpyH2D dYFlat (HostPtr hYFlat) bytesYFlat
+                                  let DevicePtr pAFlat = dAFlat
+                                      DevicePtr pXFlat = dXFlat
+                                      DevicePtr pYFlat = dYFlat
+                                  pokeArray hAPtrs [pAFlat, pAFlat `plusPtr` matrixBytesInt]
+                                  pokeArray hXPtrs [pXFlat, pXFlat `plusPtr` vecBytesInt]
+                                  pokeArray hYPtrs [pYFlat, pYFlat `plusPtr` outBytesInt]
+                                  hipMemcpyH2D dAPtrs (HostPtr hAPtrs) bytesAPtrs
+                                  hipMemcpyH2D dXPtrs (HostPtr hXPtrs) bytesXPtrs
+                                  hipMemcpyH2D dYPtrs (HostPtr hYPtrs) bytesYPtrs
+
+                                  bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                    withRocblasHandle $ \handle -> do
+                                      rocblasSetStream handle stream
+                                      rocblasSgemvBatched
+                                        handle
+                                        RocblasOperationNone
+                                        (fromIntegral m :: RocblasInt)
+                                        (fromIntegral n :: RocblasInt)
+                                        1.0
+                                        dAPtrs
+                                        (fromIntegral m :: RocblasInt)
+                                        dXPtrs
+                                        1
+                                        0.0
+                                        dYPtrs
+                                        1
+                                        batchCount'
+                                      hipStreamSynchronize stream
+
+                                  hipMemcpyD2H (HostPtr hYFlat) dYFlat bytesYFlat
+                                  yOut <- peekArray (batchCount * outElems) hYFlat
+                                  if approxVecWithTol 1.0e-3 yOut yExpected
+                                    then pure SmokePassed
+                                    else fail ("rocBLAS SGEMV batched mismatch: expected=" <> show yExpected <> ", got=" <> show yOut)
+
+rocblasGemvStridedBatchedSmoke :: IO SmokeResult
+rocblasGemvStridedBatchedSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocblasSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let batchCount = 2 :: Int
+              m = 2 :: Int
+              n = 2 :: Int
+              strideA = fromIntegral (m * n) :: RocblasStride
+              strideX = fromIntegral n :: RocblasStride
+              strideY = fromIntegral m :: RocblasStride
+              aVals = fmap CFloat [1, 3, 2, 4, 2, 0, 0, 3]
+              xVals = fmap CFloat [5, 6, 7, 8]
+              yExpected = fmap CFloat [17, 39, 14, 24]
+              bytesA = fromIntegral (batchCount * m * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesX = fromIntegral (batchCount * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesY = fromIntegral (batchCount * m * sizeOf (undefined :: CFloat)) :: CSize
+              batchCount' = fromIntegral batchCount :: RocblasInt
+
+          bracket (mallocArray (batchCount * m * n) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray (batchCount * n) :: IO (Ptr CFloat)) free $ \hX ->
+              bracket (mallocArray (batchCount * m) :: IO (Ptr CFloat)) free $ \hY -> do
+                pokeArray hA aVals
+                pokeArray hX xVals
+                pokeArray hY (replicate (batchCount * m) (CFloat 0))
+
+                bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                  bracket (hipMallocBytes bytesX :: IO (DevicePtr CFloat)) hipFree $ \dX ->
+                    bracket (hipMallocBytes bytesY :: IO (DevicePtr CFloat)) hipFree $ \dY -> do
+                      hipMemcpyH2D dA (HostPtr hA) bytesA
+                      hipMemcpyH2D dX (HostPtr hX) bytesX
+                      hipMemcpyH2D dY (HostPtr hY) bytesY
+
+                      bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                        withRocblasHandle $ \handle -> do
+                          rocblasSetStream handle stream
+                          rocblasSgemvStridedBatched
+                            handle
+                            RocblasOperationNone
+                            (fromIntegral m :: RocblasInt)
+                            (fromIntegral n :: RocblasInt)
+                            1.0
+                            dA
+                            (fromIntegral m :: RocblasInt)
+                            strideA
+                            dX
+                            1
+                            strideX
+                            0.0
+                            dY
+                            1
+                            strideY
+                            batchCount'
+                          hipStreamSynchronize stream
+
+                      hipMemcpyD2H (HostPtr hY) dY bytesY
+                      yOut <- peekArray (batchCount * m) hY
+                      if approxVecWithTol 1.0e-3 yOut yExpected
+                        then pure SmokePassed
+                        else fail ("rocBLAS SGEMV strided batched mismatch: expected=" <> show yExpected <> ", got=" <> show yOut)
+
+rocblasGemmBatchedSmoke :: IO SmokeResult
+rocblasGemmBatchedSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocblasSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let batchCount = 2 :: Int
+              m = 2 :: Int
+              n = 2 :: Int
+              k = 2 :: Int
+              matrixElems = m * n
+              matrixBytesInt = matrixElems * sizeOf (undefined :: CFloat)
+              a0 = fmap CFloat [1, 3, 2, 4]
+              b0 = fmap CFloat [5, 7, 6, 8]
+              c0 = fmap CFloat [19, 43, 22, 50]
+              a1 = fmap CFloat [2, 1, 0, 3]
+              b1 = fmap CFloat [1, 2, 4, 5]
+              c1 = fmap CFloat [2, 7, 8, 19]
+              cExpected = c0 <> c1
+              bytesAFlat = fromIntegral (batchCount * matrixBytesInt) :: CSize
+              bytesBFlat = fromIntegral (batchCount * matrixBytesInt) :: CSize
+              bytesCFlat = fromIntegral (batchCount * matrixBytesInt) :: CSize
+              bytesAPtrs = fromIntegral (batchCount * sizeOf (undefined :: Ptr CFloat)) :: CSize
+              bytesBPtrs = fromIntegral (batchCount * sizeOf (undefined :: Ptr CFloat)) :: CSize
+              bytesCPtrs = fromIntegral (batchCount * sizeOf (undefined :: Ptr CFloat)) :: CSize
+              batchCount' = fromIntegral batchCount :: RocblasInt
+
+          bracket (mallocArray (batchCount * matrixElems) :: IO (Ptr CFloat)) free $ \hAFlat ->
+            bracket (mallocArray (batchCount * matrixElems) :: IO (Ptr CFloat)) free $ \hBFlat ->
+              bracket (mallocArray (batchCount * matrixElems) :: IO (Ptr CFloat)) free $ \hCFlat ->
+                bracket (mallocArray batchCount :: IO (Ptr (Ptr CFloat))) free $ \hAPtrs ->
+                  bracket (mallocArray batchCount :: IO (Ptr (Ptr CFloat))) free $ \hBPtrs ->
+                    bracket (mallocArray batchCount :: IO (Ptr (Ptr CFloat))) free $ \hCPtrs -> do
+                      pokeArray hAFlat (a0 <> a1)
+                      pokeArray hBFlat (b0 <> b1)
+                      pokeArray hCFlat (replicate (batchCount * matrixElems) (CFloat 0))
+
+                      bracket (hipMallocBytes bytesAFlat :: IO (DevicePtr CFloat)) hipFree $ \dAFlat ->
+                        bracket (hipMallocBytes bytesBFlat :: IO (DevicePtr CFloat)) hipFree $ \dBFlat ->
+                          bracket (hipMallocBytes bytesCFlat :: IO (DevicePtr CFloat)) hipFree $ \dCFlat ->
+                            bracket (hipMallocBytes bytesAPtrs :: IO (DevicePtr (Ptr CFloat))) hipFree $ \dAPtrs ->
+                              bracket (hipMallocBytes bytesBPtrs :: IO (DevicePtr (Ptr CFloat))) hipFree $ \dBPtrs ->
+                                bracket (hipMallocBytes bytesCPtrs :: IO (DevicePtr (Ptr CFloat))) hipFree $ \dCPtrs -> do
+                                  hipMemcpyH2D dAFlat (HostPtr hAFlat) bytesAFlat
+                                  hipMemcpyH2D dBFlat (HostPtr hBFlat) bytesBFlat
+                                  hipMemcpyH2D dCFlat (HostPtr hCFlat) bytesCFlat
+                                  let DevicePtr pAFlat = dAFlat
+                                      DevicePtr pBFlat = dBFlat
+                                      DevicePtr pCFlat = dCFlat
+                                  pokeArray hAPtrs [pAFlat, pAFlat `plusPtr` matrixBytesInt]
+                                  pokeArray hBPtrs [pBFlat, pBFlat `plusPtr` matrixBytesInt]
+                                  pokeArray hCPtrs [pCFlat, pCFlat `plusPtr` matrixBytesInt]
+                                  hipMemcpyH2D dAPtrs (HostPtr hAPtrs) bytesAPtrs
+                                  hipMemcpyH2D dBPtrs (HostPtr hBPtrs) bytesBPtrs
+                                  hipMemcpyH2D dCPtrs (HostPtr hCPtrs) bytesCPtrs
+
+                                  bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                                    withRocblasHandle $ \handle -> do
+                                      rocblasSetStream handle stream
+                                      rocblasSgemmBatched
+                                        handle
+                                        RocblasOperationNone
+                                        RocblasOperationNone
+                                        (fromIntegral m :: RocblasInt)
+                                        (fromIntegral n :: RocblasInt)
+                                        (fromIntegral k :: RocblasInt)
+                                        1.0
+                                        dAPtrs
+                                        (fromIntegral m :: RocblasInt)
+                                        dBPtrs
+                                        (fromIntegral k :: RocblasInt)
+                                        0.0
+                                        dCPtrs
+                                        (fromIntegral m :: RocblasInt)
+                                        batchCount'
+                                      hipStreamSynchronize stream
+
+                                  hipMemcpyD2H (HostPtr hCFlat) dCFlat bytesCFlat
+                                  cOut <- peekArray (batchCount * matrixElems) hCFlat
+                                  if approxVecWithTol 1.0e-3 cOut cExpected
+                                    then pure SmokePassed
+                                    else fail ("rocBLAS SGEMM batched mismatch: expected=" <> show cExpected <> ", got=" <> show cOut)
+
+rocblasGemmStridedBatchedSmoke :: IO SmokeResult
+rocblasGemmStridedBatchedSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      skipReason <- rocblasSkipReason
+      case skipReason of
+        Just reason -> pure (SmokeSkipped reason)
+        Nothing -> do
+          let batchCount = 2 :: Int
+              m = 2 :: Int
+              n = 2 :: Int
+              k = 2 :: Int
+              strideA = fromIntegral (m * k) :: RocblasStride
+              strideB = fromIntegral (k * n) :: RocblasStride
+              strideC = fromIntegral (m * n) :: RocblasStride
+              aVals = fmap CFloat [1, 3, 2, 4, 2, 1, 0, 3]
+              bVals = fmap CFloat [5, 7, 6, 8, 1, 2, 4, 5]
+              cExpected = fmap CFloat [19, 43, 22, 50, 2, 7, 8, 19]
+              bytesA = fromIntegral (batchCount * m * k * sizeOf (undefined :: CFloat)) :: CSize
+              bytesB = fromIntegral (batchCount * k * n * sizeOf (undefined :: CFloat)) :: CSize
+              bytesC = fromIntegral (batchCount * m * n * sizeOf (undefined :: CFloat)) :: CSize
+              batchCount' = fromIntegral batchCount :: RocblasInt
+
+          bracket (mallocArray (batchCount * m * k) :: IO (Ptr CFloat)) free $ \hA ->
+            bracket (mallocArray (batchCount * k * n) :: IO (Ptr CFloat)) free $ \hB ->
+              bracket (mallocArray (batchCount * m * n) :: IO (Ptr CFloat)) free $ \hC -> do
+                pokeArray hA aVals
+                pokeArray hB bVals
+                pokeArray hC (replicate (batchCount * m * n) (CFloat 0))
+
+                bracket (hipMallocBytes bytesA :: IO (DevicePtr CFloat)) hipFree $ \dA ->
+                  bracket (hipMallocBytes bytesB :: IO (DevicePtr CFloat)) hipFree $ \dB ->
+                    bracket (hipMallocBytes bytesC :: IO (DevicePtr CFloat)) hipFree $ \dC -> do
+                      hipMemcpyH2D dA (HostPtr hA) bytesA
+                      hipMemcpyH2D dB (HostPtr hB) bytesB
+                      hipMemcpyH2D dC (HostPtr hC) bytesC
+
+                      bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                        withRocblasHandle $ \handle -> do
+                          rocblasSetStream handle stream
+                          rocblasSgemmStridedBatched
+                            handle
+                            RocblasOperationNone
+                            RocblasOperationNone
+                            (fromIntegral m :: RocblasInt)
+                            (fromIntegral n :: RocblasInt)
+                            (fromIntegral k :: RocblasInt)
+                            1.0
+                            dA
+                            (fromIntegral m :: RocblasInt)
+                            strideA
+                            dB
+                            (fromIntegral k :: RocblasInt)
+                            strideB
+                            0.0
+                            dC
+                            (fromIntegral m :: RocblasInt)
+                            strideC
+                            batchCount'
+                          hipStreamSynchronize stream
+
+                      hipMemcpyD2H (HostPtr hC) dC bytesC
+                      cOut <- peekArray (batchCount * m * n) hC
+                      if approxVecWithTol 1.0e-3 cOut cExpected
+                        then pure SmokePassed
+                        else fail ("rocBLAS SGEMM strided batched mismatch: expected=" <> show cExpected <> ", got=" <> show cOut)
 
 rocblasGemmSmoke :: IO SmokeResult
 rocblasGemmSmoke = do
@@ -1375,6 +3326,27 @@ diagColMajorCFloat vals =
   ]
   where
     n = length vals
+
+matMulRightRowVector :: [CFloat] -> [CFloat] -> [CFloat]
+matMulRightRowVector left right =
+  [ CFloat (unCFloat x * unCFloat y)
+  | y <- right
+  , x <- left
+  ]
+
+rowGramMatrixColMajorCFloat :: Int -> Int -> [CFloat] -> [CFloat]
+rowGramMatrixColMajorCFloat rows cols vals =
+  [ CFloat (sum [unCFloat (indexColMajor rows vals i col) * unCFloat (indexColMajor rows vals j col) | col <- [0 .. cols - 1]])
+  | j <- [0 .. rows - 1]
+  , i <- [0 .. rows - 1]
+  ]
+
+extractLeadingRowsColMajor :: Int -> Int -> Int -> [a] -> [a]
+extractLeadingRowsColMajor ldRows cols usedRows vals =
+  [ indexColMajor ldRows vals row col
+  | col <- [0 .. cols - 1]
+  , row <- [0 .. usedRows - 1]
+  ]
 
 indexColMajor :: Int -> [a] -> Int -> Int -> a
 indexColMajor rows vals row col = vals !! (row + col * rows)

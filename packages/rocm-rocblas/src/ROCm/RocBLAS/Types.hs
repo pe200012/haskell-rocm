@@ -19,6 +19,10 @@ module ROCm.RocBLAS.Types
   , RocblasWorkmode(..)
   , pattern RocblasOutOfPlace
   , pattern RocblasInPlace
+  , RocblasSrange(..)
+  , pattern RocblasSrangeAll
+  , pattern RocblasSrangeValue
+  , pattern RocblasSrangeIndex
   , RocblasEvect(..)
   , pattern RocblasEvectOriginal
   , pattern RocblasEvectTridiagonal
@@ -79,6 +83,18 @@ pattern RocblasOutOfPlace = RocblasWorkmode 201
 
 pattern RocblasInPlace :: RocblasWorkmode
 pattern RocblasInPlace = RocblasWorkmode 202
+
+newtype RocblasSrange = RocblasSrange {unRocblasSrange :: CInt}
+  deriving newtype (Eq, Ord, Show)
+
+pattern RocblasSrangeAll :: RocblasSrange
+pattern RocblasSrangeAll = RocblasSrange 261
+
+pattern RocblasSrangeValue :: RocblasSrange
+pattern RocblasSrangeValue = RocblasSrange 262
+
+pattern RocblasSrangeIndex :: RocblasSrange
+pattern RocblasSrangeIndex = RocblasSrange 263
 
 newtype RocblasEvect = RocblasEvect {unRocblasEvect :: CInt}
   deriving newtype (Eq, Ord, Show)

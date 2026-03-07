@@ -11,11 +11,15 @@ module ROCm.HIP
   , hipHostMallocBytes
   , hipHostMallocBytesWithFlags
   , hipHostFree
+  , hipHostRegister
+  , hipHostUnregister
 
     -- * Memcpy
   , hipMemcpy
   , hipMemcpyAsync
   , hipMemcpyWithStream
+  , hipMemset
+  , hipMemsetAsync
   , hipMemcpyH2D
   , hipMemcpyD2H
   , hipMemcpyD2D
@@ -28,16 +32,28 @@ module ROCm.HIP
 
     -- * Synchronization
   , hipDeviceSynchronize
+  , hipDeviceReset
+
+    -- * Device/runtime control
+  , hipSetDevice
+  , hipRuntimeGetVersion
+  , hipDriverGetVersion
 
     -- * Streams
   , hipStreamCreate
+  , hipStreamCreateWithFlags
+  , hipStreamCreateWithPriority
   , hipStreamDestroy
+  , hipStreamQuery
   , hipStreamSynchronize
+  , hipStreamWaitEvent
 
     -- * Events
   , hipEventCreate
+  , hipEventCreateWithFlags
   , hipEventDestroy
   , hipEventRecord
+  , hipEventRecordWithFlags
   , hipEventSynchronize
   , hipEventQuery
   , hipEventElapsedTime
@@ -52,7 +68,7 @@ module ROCm.HIP
   ) where
 
 import Control.Exception (SomeException, bracket, displayException, try)
-import Foreign.C.Types (CFloat(..), CSize)
+import Foreign.C.Types (CFloat(..), CInt(..), CSize, CUInt)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, freeHaskellFunPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
@@ -63,35 +79,60 @@ import ROCm.FFI.Core.Types (DevicePtr(..), HipEvent(..), HipStream(..), HipStrea
 import ROCm.HIP.Device
 import ROCm.HIP.Error (checkHip)
 import ROCm.HIP.Raw
-  ( c_hipDeviceSynchronize
+  ( c_hipDeviceReset
+  , c_hipDeviceSynchronize
+  , c_hipDriverGetVersion
   , c_hipEventCreate
+  , c_hipEventCreateWithFlags
   , c_hipEventDestroy
   , c_hipEventElapsedTime
   , c_hipEventQuery
   , c_hipEventRecord
+  , c_hipEventRecordWithFlags
   , c_hipEventSynchronize
   , c_hipFree
   , c_hipGetLastError
   , c_hipHostFree
   , c_hipHostMalloc
+  , c_hipHostRegister
+  , c_hipHostUnregister
   , c_hipMalloc
   , c_hipMemcpy
   , c_hipMemcpyAsync
   , c_hipMemcpyWithStream
+  , c_hipMemset
+  , c_hipMemsetAsync
   , c_hipPeekAtLastError
+  , c_hipRuntimeGetVersion
+  , c_hipSetDevice
   , c_hipStreamAddCallback
   , c_hipStreamCreate
+  , c_hipStreamCreateWithFlags
+  , c_hipStreamCreateWithPriority
   , c_hipStreamDestroy
+  , c_hipStreamQuery
   , c_hipStreamSynchronize
+  , c_hipStreamWaitEvent
   , mkHipStreamCallback
   )
 import ROCm.HIP.Types
   ( HipError
+  , HipEventFlags
+  , HipEventRecordFlags
   , HipHostMallocFlags
+  , HipHostRegisterFlags
   , HipMemcpyKind
+  , HipStreamFlags
   , pattern HipErrorNotReady
+  , pattern HipEventBlockingSync
+  , pattern HipEventRecordDefault
+  , pattern HipEventRecordExternal
   , pattern HipHostMallocDefault
   , pattern HipHostMallocPortable
+  , pattern HipHostRegisterDefault
+  , pattern HipHostRegisterMapped
+  , pattern HipStreamDefault
+  , pattern HipStreamNonBlocking
   , pattern HipSuccess
   , pattern HipMemcpyDeviceToDevice
   , pattern HipMemcpyDeviceToHost
@@ -126,6 +167,13 @@ hipHostMallocBytesWithFlags bytes flags =
 hipHostFree :: HasCallStack => PinnedHostPtr a -> IO ()
 hipHostFree (PinnedHostPtr p) = checkHip "hipHostFree" =<< c_hipHostFree (castPtr p)
 
+hipHostRegister :: HasCallStack => HostPtr a -> CSize -> HipHostRegisterFlags -> IO ()
+hipHostRegister (HostPtr p) bytes flags =
+  checkHip "hipHostRegister" =<< c_hipHostRegister (castPtr p) bytes flags
+
+hipHostUnregister :: HasCallStack => HostPtr a -> IO ()
+hipHostUnregister (HostPtr p) = checkHip "hipHostUnregister" =<< c_hipHostUnregister (castPtr p)
+
 -- Memcpy --------------------------------------------------------------------
 
 hipMemcpy :: HasCallStack => Ptr () -> Ptr () -> CSize -> HipMemcpyKind -> IO ()
@@ -138,6 +186,14 @@ hipMemcpyAsync dst src bytes kind (HipStream stream) =
 hipMemcpyWithStream :: HasCallStack => Ptr () -> Ptr () -> CSize -> HipMemcpyKind -> HipStream -> IO ()
 hipMemcpyWithStream dst src bytes kind (HipStream stream) =
   checkHip "hipMemcpyWithStream" =<< c_hipMemcpyWithStream dst src bytes kind stream
+
+hipMemset :: HasCallStack => DevicePtr a -> Int -> CSize -> IO ()
+hipMemset (DevicePtr dst) value bytes =
+  checkHip "hipMemset" =<< c_hipMemset (castPtr dst) (fromIntegral value) bytes
+
+hipMemsetAsync :: HasCallStack => DevicePtr a -> Int -> CSize -> HipStream -> IO ()
+hipMemsetAsync (DevicePtr dst) value bytes (HipStream stream) =
+  checkHip "hipMemsetAsync" =<< c_hipMemsetAsync (castPtr dst) (fromIntegral value) bytes stream
 
 hipMemcpyH2D :: HasCallStack => DevicePtr a -> HostPtr b -> CSize -> IO ()
 hipMemcpyH2D (DevicePtr dst) (HostPtr src) bytes =
@@ -180,6 +236,24 @@ hipMemcpyD2DAsync (DevicePtr dst) (DevicePtr src) bytes stream =
 hipDeviceSynchronize :: HasCallStack => IO ()
 hipDeviceSynchronize = checkHip "hipDeviceSynchronize" =<< c_hipDeviceSynchronize
 
+hipDeviceReset :: HasCallStack => IO ()
+hipDeviceReset = checkHip "hipDeviceReset" =<< c_hipDeviceReset
+
+hipSetDevice :: HasCallStack => Int -> IO ()
+hipSetDevice deviceId = checkHip "hipSetDevice" =<< c_hipSetDevice (fromIntegral deviceId)
+
+hipRuntimeGetVersion :: HasCallStack => IO Int
+hipRuntimeGetVersion =
+  alloca $ \pVersion -> do
+    checkHip "hipRuntimeGetVersion" =<< c_hipRuntimeGetVersion pVersion
+    fromIntegral <$> (peek pVersion :: IO CInt)
+
+hipDriverGetVersion :: HasCallStack => IO Int
+hipDriverGetVersion =
+  alloca $ \pVersion -> do
+    checkHip "hipDriverGetVersion" =<< c_hipDriverGetVersion pVersion
+    fromIntegral <$> (peek pVersion :: IO CInt)
+
 -- Streams -------------------------------------------------------------------
 
 hipStreamCreate :: HasCallStack => IO HipStream
@@ -188,11 +262,34 @@ hipStreamCreate =
     checkHip "hipStreamCreate" =<< c_hipStreamCreate pStream
     HipStream <$> peek pStream
 
+hipStreamCreateWithFlags :: HasCallStack => HipStreamFlags -> IO HipStream
+hipStreamCreateWithFlags flags =
+  alloca $ \pStream -> do
+    checkHip "hipStreamCreateWithFlags" =<< c_hipStreamCreateWithFlags pStream flags
+    HipStream <$> peek pStream
+
+hipStreamCreateWithPriority :: HasCallStack => HipStreamFlags -> Int -> IO HipStream
+hipStreamCreateWithPriority flags priority =
+  alloca $ \pStream -> do
+    checkHip "hipStreamCreateWithPriority" =<< c_hipStreamCreateWithPriority pStream flags (fromIntegral priority)
+    HipStream <$> peek pStream
+
 hipStreamDestroy :: HasCallStack => HipStream -> IO ()
 hipStreamDestroy (HipStream s) = checkHip "hipStreamDestroy" =<< c_hipStreamDestroy s
 
+hipStreamQuery :: HasCallStack => HipStream -> IO Bool
+hipStreamQuery (HipStream s) = do
+  st <- c_hipStreamQuery s
+  if st == HipErrorNotReady
+    then pure False
+    else checkHip "hipStreamQuery" st >> pure True
+
 hipStreamSynchronize :: HasCallStack => HipStream -> IO ()
 hipStreamSynchronize (HipStream s) = checkHip "hipStreamSynchronize" =<< c_hipStreamSynchronize s
+
+hipStreamWaitEvent :: HasCallStack => HipStream -> HipEvent -> CUInt -> IO ()
+hipStreamWaitEvent (HipStream stream) (HipEvent ev) flags =
+  checkHip "hipStreamWaitEvent" =<< c_hipStreamWaitEvent stream ev flags
 
 -- Events --------------------------------------------------------------------
 
@@ -202,12 +299,22 @@ hipEventCreate =
     checkHip "hipEventCreate" =<< c_hipEventCreate pEvent
     HipEvent <$> peek pEvent
 
+hipEventCreateWithFlags :: HasCallStack => HipEventFlags -> IO HipEvent
+hipEventCreateWithFlags flags =
+  alloca $ \pEvent -> do
+    checkHip "hipEventCreateWithFlags" =<< c_hipEventCreateWithFlags pEvent flags
+    HipEvent <$> peek pEvent
+
 hipEventDestroy :: HasCallStack => HipEvent -> IO ()
 hipEventDestroy (HipEvent ev) = checkHip "hipEventDestroy" =<< c_hipEventDestroy ev
 
 hipEventRecord :: HasCallStack => HipEvent -> HipStream -> IO ()
 hipEventRecord (HipEvent ev) (HipStream stream) =
   checkHip "hipEventRecord" =<< c_hipEventRecord ev stream
+
+hipEventRecordWithFlags :: HasCallStack => HipEvent -> HipStream -> HipEventRecordFlags -> IO ()
+hipEventRecordWithFlags (HipEvent ev) (HipStream stream) flags =
+  checkHip "hipEventRecordWithFlags" =<< c_hipEventRecordWithFlags ev stream flags
 
 hipEventSynchronize :: HasCallStack => HipEvent -> IO ()
 hipEventSynchronize (HipEvent ev) = checkHip "hipEventSynchronize" =<< c_hipEventSynchronize ev

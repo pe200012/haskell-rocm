@@ -16,6 +16,23 @@ module ROCm.HIP.Types
   , pattern HipHostMallocNumaUser
   , pattern HipHostMallocCoherent
   , pattern HipHostMallocNonCoherent
+  , HipHostRegisterFlags(..)
+  , pattern HipHostRegisterDefault
+  , pattern HipHostRegisterPortable
+  , pattern HipHostRegisterMapped
+  , pattern HipHostRegisterIoMemory
+  , pattern HipHostRegisterReadOnly
+  , HipStreamFlags(..)
+  , pattern HipStreamDefault
+  , pattern HipStreamNonBlocking
+  , HipEventFlags(..)
+  , pattern HipEventDefault
+  , pattern HipEventBlockingSync
+  , pattern HipEventDisableTiming
+  , pattern HipEventInterprocess
+  , HipEventRecordFlags(..)
+  , pattern HipEventRecordDefault
+  , pattern HipEventRecordExternal
   , HipMemcpyKind(..)
   , pattern HipMemcpyHostToHost
   , pattern HipMemcpyHostToDevice
@@ -66,6 +83,57 @@ pattern HipHostMallocCoherent = HipHostMallocFlags 0x40000000
 
 pattern HipHostMallocNonCoherent :: HipHostMallocFlags
 pattern HipHostMallocNonCoherent = HipHostMallocFlags 0x80000000
+
+newtype HipHostRegisterFlags = HipHostRegisterFlags {unHipHostRegisterFlags :: CUInt}
+  deriving newtype (Eq, Ord, Show, Bits)
+
+pattern HipHostRegisterDefault :: HipHostRegisterFlags
+pattern HipHostRegisterDefault = HipHostRegisterFlags 0x0
+
+pattern HipHostRegisterPortable :: HipHostRegisterFlags
+pattern HipHostRegisterPortable = HipHostRegisterFlags 0x1
+
+pattern HipHostRegisterMapped :: HipHostRegisterFlags
+pattern HipHostRegisterMapped = HipHostRegisterFlags 0x2
+
+pattern HipHostRegisterIoMemory :: HipHostRegisterFlags
+pattern HipHostRegisterIoMemory = HipHostRegisterFlags 0x4
+
+pattern HipHostRegisterReadOnly :: HipHostRegisterFlags
+pattern HipHostRegisterReadOnly = HipHostRegisterFlags 0x08
+
+newtype HipStreamFlags = HipStreamFlags {unHipStreamFlags :: CUInt}
+  deriving newtype (Eq, Ord, Show, Bits)
+
+pattern HipStreamDefault :: HipStreamFlags
+pattern HipStreamDefault = HipStreamFlags 0x00
+
+pattern HipStreamNonBlocking :: HipStreamFlags
+pattern HipStreamNonBlocking = HipStreamFlags 0x01
+
+newtype HipEventFlags = HipEventFlags {unHipEventFlags :: CUInt}
+  deriving newtype (Eq, Ord, Show, Bits)
+
+pattern HipEventDefault :: HipEventFlags
+pattern HipEventDefault = HipEventFlags 0x0
+
+pattern HipEventBlockingSync :: HipEventFlags
+pattern HipEventBlockingSync = HipEventFlags 0x1
+
+pattern HipEventDisableTiming :: HipEventFlags
+pattern HipEventDisableTiming = HipEventFlags 0x2
+
+pattern HipEventInterprocess :: HipEventFlags
+pattern HipEventInterprocess = HipEventFlags 0x4
+
+newtype HipEventRecordFlags = HipEventRecordFlags {unHipEventRecordFlags :: CUInt}
+  deriving newtype (Eq, Ord, Show, Bits)
+
+pattern HipEventRecordDefault :: HipEventRecordFlags
+pattern HipEventRecordDefault = HipEventRecordFlags 0x00
+
+pattern HipEventRecordExternal :: HipEventRecordFlags
+pattern HipEventRecordExternal = HipEventRecordFlags 0x01
 
 newtype HipMemcpyKind = HipMemcpyKind {unHipMemcpyKind :: CInt}
   deriving newtype (Eq, Ord, Show)

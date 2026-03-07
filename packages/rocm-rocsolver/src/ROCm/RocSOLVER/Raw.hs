@@ -19,13 +19,31 @@ module ROCm.RocSOLVER.Raw
   , c_rocsolver_dsyev
   , c_rocsolver_sgesvd
   , c_rocsolver_dgesvd
+  , c_rocsolver_sgesdd
+  , c_rocsolver_dgesdd
+  , c_rocsolver_sgesdd_batched
+  , c_rocsolver_dgesdd_batched
+  , c_rocsolver_sgesdd_strided_batched
+  , c_rocsolver_dgesdd_strided_batched
+  , c_rocsolver_sgesvdj
+  , c_rocsolver_dgesvdj
+  , c_rocsolver_sgesvdj_batched
+  , c_rocsolver_dgesvdj_batched
+  , c_rocsolver_sgesvdj_strided_batched
+  , c_rocsolver_dgesvdj_strided_batched
+  , c_rocsolver_sgesvdx
+  , c_rocsolver_dgesvdx
+  , c_rocsolver_sgesvdx_batched
+  , c_rocsolver_dgesvdx_batched
+  , c_rocsolver_sgesvdx_strided_batched
+  , c_rocsolver_dgesvdx_strided_batched
   ) where
 
 import Foreign.C.Types (CInt(..), CDouble(..), CFloat(..))
 import Foreign.Ptr (Ptr)
 import ROCm.FFI.Core.Types (RocblasHandleTag)
-import ROCm.RocBLAS.C.Types (RocblasInt)
-import ROCm.RocBLAS.Types (RocblasEvect(..), RocblasFill(..), RocblasOperation(..), RocblasStatus(..), RocblasSvect(..), RocblasWorkmode(..))
+import ROCm.RocBLAS.C.Types (RocblasInt, RocblasStride)
+import ROCm.RocBLAS.Types (RocblasEvect(..), RocblasFill(..), RocblasOperation(..), RocblasSrange(..), RocblasStatus(..), RocblasSvect(..), RocblasWorkmode(..))
 
 foreign import ccall safe "rocsolver_spotrf"
   c_rocsolver_spotrf ::
@@ -251,4 +269,434 @@ foreign import ccall safe "rocsolver_dgesvd"
     Ptr CDouble ->
     RocblasWorkmode ->
     Ptr RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_sgesdd"
+  c_rocsolver_sgesdd ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr CFloat ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_dgesdd"
+  c_rocsolver_dgesdd ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr CDouble ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_sgesdd_batched"
+  c_rocsolver_sgesdd_batched ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr (Ptr CFloat) ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasStride ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_dgesdd_batched"
+  c_rocsolver_dgesdd_batched ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr (Ptr CDouble) ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasStride ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_sgesdd_strided_batched"
+  c_rocsolver_sgesdd_strided_batched ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CFloat ->
+    RocblasStride ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_dgesdd_strided_batched"
+  c_rocsolver_dgesdd_strided_batched ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CDouble ->
+    RocblasStride ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_sgesvdj"
+  c_rocsolver_sgesvdj ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasInt ->
+    CFloat ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr CFloat ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_dgesvdj"
+  c_rocsolver_dgesvdj ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasInt ->
+    CDouble ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr CDouble ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_sgesvdj_batched"
+  c_rocsolver_sgesvdj_batched ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr (Ptr CFloat) ->
+    RocblasInt ->
+    CFloat ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr CFloat ->
+    RocblasStride ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_dgesvdj_batched"
+  c_rocsolver_dgesvdj_batched ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr (Ptr CDouble) ->
+    RocblasInt ->
+    CDouble ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr CDouble ->
+    RocblasStride ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_sgesvdj_strided_batched"
+  c_rocsolver_sgesvdj_strided_batched ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    CFloat ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr CFloat ->
+    RocblasStride ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_dgesvdj_strided_batched"
+  c_rocsolver_dgesvdj_strided_batched ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    CDouble ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr CDouble ->
+    RocblasStride ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_sgesvdx"
+  c_rocsolver_sgesvdx ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasSrange ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasInt ->
+    CFloat ->
+    CFloat ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr CFloat ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_dgesvdx"
+  c_rocsolver_dgesvdx ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasSrange ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasInt ->
+    CDouble ->
+    CDouble ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr CDouble ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_sgesvdx_batched"
+  c_rocsolver_sgesvdx_batched ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasSrange ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr (Ptr CFloat) ->
+    RocblasInt ->
+    CFloat ->
+    CFloat ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr CFloat ->
+    RocblasStride ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_dgesvdx_batched"
+  c_rocsolver_dgesvdx_batched ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasSrange ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr (Ptr CDouble) ->
+    RocblasInt ->
+    CDouble ->
+    CDouble ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr CDouble ->
+    RocblasStride ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_sgesvdx_strided_batched"
+  c_rocsolver_sgesvdx_strided_batched ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasSrange ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    CFloat ->
+    CFloat ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr CFloat ->
+    RocblasStride ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CFloat ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasInt ->
+    IO RocblasStatus
+
+foreign import ccall safe "rocsolver_dgesvdx_strided_batched"
+  c_rocsolver_dgesvdx_strided_batched ::
+    Ptr RocblasHandleTag ->
+    RocblasSvect ->
+    RocblasSvect ->
+    RocblasSrange ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    CDouble ->
+    CDouble ->
+    RocblasInt ->
+    RocblasInt ->
+    Ptr RocblasInt ->
+    Ptr CDouble ->
+    RocblasStride ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr CDouble ->
+    RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasStride ->
+    Ptr RocblasInt ->
+    RocblasInt ->
     IO RocblasStatus

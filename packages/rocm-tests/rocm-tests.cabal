@@ -32,6 +32,13 @@ test-suite unit
   main-is:          Main.hs
   hs-source-dirs:   test/unit
 
+  other-modules:
+      HeaderConstants
+      RocRandHeaderConstants
+
+  cxx-sources:
+      test/unit/cbits/rocrand_header_constants.cpp
+
   build-depends:
       base >=4.18 && <5
     , rocm-hip-runtime
@@ -40,6 +47,17 @@ test-suite unit
     , rocm-rocrand
     , rocm-rocsparse
     , rocm-rocsolver
+
+  cpp-options:
+      -D__HIP_PLATFORM_AMD__=
+      -D__HIP_PLATFORM_HCC__=
+
+  cxx-options:
+      -D__HIP_PLATFORM_AMD__=
+      -D__HIP_PLATFORM_HCC__=
+
+  extra-libraries:
+      stdc++
 
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N

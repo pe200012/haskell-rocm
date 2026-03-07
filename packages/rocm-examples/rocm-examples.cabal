@@ -246,6 +246,186 @@ executable rocsolver-sgesvd
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
 
+executable rocsolver-sgesdd-batched
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesdd-batched
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocsolver-sgesdd-strided-batched
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesdd-strided-batched
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocsolver-sgesdd
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesdd
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocsolver-sgesvdj-batched
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesvdj-batched
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocsolver-sgesvdj-strided-batched
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesvdj-strided-batched
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocsolver-sgesvdj
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesvdj
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocsolver-sgesvdx
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesvdx
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocsolver-sgesvdx-value
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesvdx-value
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocsolver-sgesvdx-batched
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesvdx-batched
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocsolver-sgesvdx-batched-value
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesvdx-batched-value
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocsolver-sgesvdx-strided-batched
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesvdx-strided-batched
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocsolver-sgesvdx-strided-batched-value
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocsolver-sgesvdx-strided-batched-value
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+    , rocm-rocsolver
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
 executable hip-async-pinned-roundtrip
   main-is:          Main.hs
   hs-source-dirs:   app/hip-async-pinned-roundtrip
@@ -266,6 +446,111 @@ executable hip-stream-callback
       base >=4.18 && <5
     , rocm-ffi-core
     , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-memset-roundtrip
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-memset-roundtrip
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-stream-wait-event
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-stream-wait-event
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-host-register-roundtrip
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-host-register-roundtrip
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocblas-sdot
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocblas-sdot
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocblas-sgemv-batched
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocblas-sgemv-batched
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocblas-sgemm-batched
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocblas-sgemm-batched
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocblas-sgemm-strided-batched
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocblas-sgemm-strided-batched
+
+  build-depends:
+      base >=4.18 && <5
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocblas
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable rocfft-r2c-c2r-1d
+  main-is:          Main.hs
+  hs-source-dirs:   app/rocfft-r2c-c2r-1d
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , rocm-rocfft
 
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N

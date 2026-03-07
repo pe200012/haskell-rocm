@@ -18,6 +18,7 @@ module ROCm.RocFFT
   , rocfftPlanDestroy
   , withRocfftPlan
   , rocfftPlanGetWorkBufferSize
+  , rocfftPlanGetPrint
 
     -- * Execution info
   , rocfftExecutionInfoCreate
@@ -66,6 +67,7 @@ import ROCm.RocFFT.Raw
   , c_rocfft_execution_info_set_work_buffer
   , c_rocfft_plan_create
   , c_rocfft_plan_destroy
+  , c_rocfft_plan_get_print
   , c_rocfft_plan_get_work_buffer_size
   , c_rocfft_setup
   )
@@ -189,6 +191,10 @@ rocfftPlanGetWorkBufferSize (RocfftPlan p) =
   alloca $ \pBytes -> do
     checkRocfft "rocfft_plan_get_work_buffer_size" =<< c_rocfft_plan_get_work_buffer_size p pBytes
     peek pBytes
+
+rocfftPlanGetPrint :: HasCallStack => RocfftPlan -> IO ()
+rocfftPlanGetPrint (RocfftPlan p) =
+  checkRocfft "rocfft_plan_get_print" =<< c_rocfft_plan_get_print p
 
 -- Execution info ------------------------------------------------------------
 
