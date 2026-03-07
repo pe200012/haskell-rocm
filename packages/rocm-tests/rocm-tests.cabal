@@ -72,3 +72,15 @@ executable ffi-safe-unsafe-bench
 
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-event-elapsed-stress
+  main-is:          Main.hs
+  hs-source-dirs:   bench/hip-event-elapsed-stress
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
