@@ -102,10 +102,10 @@ foreign import ccall safe "hipDeviceReset"
 foreign import ccall safe "hipSetDevice"
   c_hipSetDevice :: CInt -> IO HipError
 
-foreign import ccall safe "hipRuntimeGetVersion"
+foreign import ccall unsafe "hipRuntimeGetVersion"
   c_hipRuntimeGetVersion :: Ptr CInt -> IO HipError
 
-foreign import ccall safe "hipDriverGetVersion"
+foreign import ccall unsafe "hipDriverGetVersion"
   c_hipDriverGetVersion :: Ptr CInt -> IO HipError
 
 foreign import ccall safe "hipStreamCreate"
@@ -159,10 +159,10 @@ foreign import ccall safe "hipStreamAddCallback"
 foreign import ccall "wrapper"
   mkHipStreamCallback :: HipStreamCallbackFun -> IO (FunPtr HipStreamCallbackFun)
 
-foreign import ccall safe "hipGetDeviceCount"
+foreign import ccall unsafe "hipGetDeviceCount"
   c_hipGetDeviceCount :: Ptr CInt -> IO HipError
 
-foreign import ccall safe "hipGetDevice"
+foreign import ccall unsafe "hipGetDevice"
   c_hipGetDevice :: Ptr CInt -> IO HipError
 
 foreign import ccall safe "hipGetDeviceProperties"
