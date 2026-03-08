@@ -15,6 +15,10 @@ library
       ROCm.HIP.Device
       ROCm.HIP.Raw
       ROCm.HIP.Error
+      ROCm.HIP.LaunchConfig
+      ROCm.HIP.LaunchAttributes
+      ROCm.HIP.GraphTypes
+      ROCm.HIP.KernelNodeParams
       ROCm.HIP.RTC
       ROCm.HIP.RTC.Types
       ROCm.HIP.RTC.Raw
@@ -22,6 +26,9 @@ library
 
   other-modules:
       ROCm.HIP.DeviceProp
+
+  cxx-sources:
+      src/cbits/hip_launch_kernel_bridge.cpp
 
   hs-source-dirs:
       src
@@ -34,6 +41,11 @@ library
   extra-libraries:
       amdhip64
       hiprtc
+      stdc++
+
+  cxx-options:
+      -D__HIP_PLATFORM_AMD__=
+      -D__HIP_PLATFORM_HCC__=
 
   cpp-options:
       -D__HIP_PLATFORM_AMD__=

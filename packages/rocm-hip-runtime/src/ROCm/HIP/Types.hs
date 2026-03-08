@@ -35,6 +35,7 @@ module ROCm.HIP.Types
   , pattern HipEventRecordExternal
   , HipMemcpyKind(..)
   , pattern HipMemcpyHostToHost
+  , HipFunctionAddress(..)
   , HipDim3(..)
   , pattern HipMemcpyHostToDevice
   , pattern HipMemcpyDeviceToHost
@@ -46,6 +47,8 @@ module ROCm.HIP.Types
 import Data.Bits (Bits)
 import Data.Word (Word32)
 import Foreign.C.Types (CInt, CUInt)
+import Foreign.Ptr (Ptr)
+import Foreign.Storable (Storable(..), peekByteOff, pokeByteOff)
 
 newtype HipError = HipError {unHipError :: CInt}
   deriving newtype (Eq, Ord, Show)
@@ -158,6 +161,9 @@ pattern HipMemcpyDefault = HipMemcpyKind 4
 pattern HipMemcpyDeviceToDeviceNoCU :: HipMemcpyKind
 pattern HipMemcpyDeviceToDeviceNoCU = HipMemcpyKind 1024
 
+newtype HipFunctionAddress = HipFunctionAddress {unHipFunctionAddress :: Ptr ()}
+  deriving newtype (Eq, Ord, Show, Storable)
+
 {-# COMPLETE
   HipMemcpyHostToHost
   , HipMemcpyHostToDevice
@@ -174,3 +180,18 @@ data HipDim3 = HipDim3
   , hipDim3Z :: !Word32
   }
   deriving stock (Eq, Ord, Show)
+
+instance Storable HipDim3 where
+  sizeOf _ = 12
+  alignment _ = alignment (undefined :: Word32)
+
+  peek p = do
+    x <- peekByteOff p 0
+    y <- peekByteOff p 4
+    z <- peekByteOff p 8
+    pure (HipDim3 x y z)
+
+  poke p (HipDim3 x y z) = do
+    pokeByteOff p 0 x
+    pokeByteOff p 4 y
+    pokeByteOff p 8 z

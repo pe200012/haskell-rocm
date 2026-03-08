@@ -4,6 +4,10 @@ module ROCm.HIP
   ( module ROCm.HIP.Types
   , module ROCm.HIP.Device
   , module ROCm.HIP.Error
+  , module ROCm.HIP.LaunchConfig
+  , module ROCm.HIP.LaunchAttributes
+  , module ROCm.HIP.GraphTypes
+  , module ROCm.HIP.KernelNodeParams
 
     -- * Memory
   , hipMallocBytes
@@ -47,6 +51,10 @@ module ROCm.HIP
   , hipStreamQuery
   , hipStreamSynchronize
   , hipStreamWaitEvent
+  , hipStreamBeginCapture
+  , hipStreamEndCapture
+  , hipStreamGetCaptureInfo
+  , hipStreamIsCapturing
 
     -- * Events
   , hipEventCreate
@@ -61,6 +69,7 @@ module ROCm.HIP
 
     -- * Callbacks
   , hipStreamAddCallback
+  , withHipHostNodeCallback
 
     -- * Modules
   , hipModuleLoad
@@ -72,15 +81,51 @@ module ROCm.HIP
   , hipModuleLaunchKernel
   , hipModuleLaunchKernelWithConfigBuffer
 
+    -- * Direct kernel launch
+  , hipLaunchKernel
+  , hipLaunchKernelExC
+
     -- * Graphs
   , hipGraphCreate
   , hipGraphDestroy
   , withHipGraph
   , hipGraphInstantiate
+  , hipGraphInstantiateWithFlags
   , hipGraphExecDestroy
   , withHipGraphExec
+  , withHipGraphExecWithFlags
   , hipGraphLaunch
   , hipGraphAddMemcpyNode1D
+  , hipGraphAddKernelNode
+  , hipGraphKernelNodeGetParams
+  , hipGraphKernelNodeSetParams
+  , hipGraphExecKernelNodeSetParams
+  , hipGraphKernelNodeSetAttribute
+  , hipGraphKernelNodeGetAttribute
+  , hipGraphKernelNodeCopyAttributes
+  , hipGraphAddHostNode
+  , hipGraphHostNodeGetParams
+  , hipGraphHostNodeSetParams
+  , hipGraphExecHostNodeSetParams
+  , hipGraphAddMemsetNode
+  , hipGraphMemsetNodeGetParams
+  , hipGraphMemsetNodeSetParams
+  , hipGraphExecMemsetNodeSetParams
+  , hipGraphClone
+  , withHipGraphClone
+  , hipGraphNodeFindInClone
+  , hipGraphExecUpdate
+  , hipGraphDebugDotPrint
+  , hipGraphAddChildGraphNode
+  , hipGraphChildGraphNodeGetGraph
+  , hipGraphAddEventRecordNode
+  , hipGraphEventRecordNodeGetEvent
+  , hipGraphEventRecordNodeSetEvent
+  , hipGraphExecEventRecordNodeSetEvent
+  , hipGraphAddEventWaitNode
+  , hipGraphEventWaitNodeGetEvent
+  , hipGraphEventWaitNodeSetEvent
+  , hipGraphExecEventWaitNodeSetEvent
 
     -- * Error state
   , hipGetLastError
@@ -89,11 +134,12 @@ module ROCm.HIP
 
 import Control.Exception (SomeException, bracket, displayException, try)
 import qualified Data.ByteString as BS
-import Data.Word (Word32)
+import Data.Word (Word32, Word64)
 import Foreign.C.String (withCString)
 import Foreign.C.Types (CFloat(..), CInt(..), CSize, CUInt(..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
+import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (FunPtr, Ptr, WordPtr, castPtr, freeHaskellFunPtr, nullPtr, wordPtrToPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (peek, poke)
@@ -114,9 +160,17 @@ import ROCm.FFI.Core.Types
   )
 import ROCm.HIP.Device
 import ROCm.HIP.Error (checkHip)
+import ROCm.HIP.GraphTypes
+import ROCm.HIP.KernelNodeParams
+  ( HipKernelNodeParams(..)
+  )
+import ROCm.HIP.LaunchAttributes
+import ROCm.HIP.LaunchConfig
 import ROCm.HIP.Raw
   ( c_hipDeviceReset
   , c_hipDeviceSynchronize
+  , c_hipLaunchKernel
+  , c_hipLaunchKernelExC
   , c_hipDriverGetVersion
   , c_hipEventCreate
   , c_hipEventCreateWithFlags
@@ -141,30 +195,66 @@ import ROCm.HIP.Raw
   , c_hipPeekAtLastError
   , c_hipRuntimeGetVersion
   , c_hipSetDevice
+  , c_hipGraphAddChildGraphNode
+  , c_hipGraphAddEventRecordNode
+  , c_hipGraphAddEventWaitNode
+  , c_hipGraphAddHostNode
+  , c_hipGraphAddKernelNode
   , c_hipGraphAddMemcpyNode1D
+  , c_hipGraphAddMemsetNode
+  , c_hipGraphChildGraphNodeGetGraph
+  , c_hipGraphClone
   , c_hipGraphCreate
+  , c_hipGraphDebugDotPrint
   , c_hipGraphDestroy
+  , c_hipGraphEventRecordNodeGetEvent
+  , c_hipGraphEventRecordNodeSetEvent
+  , c_hipGraphEventWaitNodeGetEvent
+  , c_hipGraphEventWaitNodeSetEvent
   , c_hipGraphExecDestroy
+  , c_hipGraphExecEventRecordNodeSetEvent
+  , c_hipGraphExecEventWaitNodeSetEvent
+  , c_hipGraphExecHostNodeSetParams
+  , c_hipGraphExecKernelNodeSetParams
+  , c_hipGraphExecMemsetNodeSetParams
+  , c_hipGraphExecUpdate
+  , c_hipGraphHostNodeGetParams
+  , c_hipGraphHostNodeSetParams
   , c_hipGraphInstantiate
+  , c_hipGraphInstantiateWithFlags
+  , c_hipGraphKernelNodeCopyAttributes
+  , c_hipGraphKernelNodeGetAttribute
+  , c_hipGraphKernelNodeGetParams
+  , c_hipGraphKernelNodeSetAttribute
+  , c_hipGraphKernelNodeSetParams
   , c_hipGraphLaunch
+  , c_hipGraphMemsetNodeGetParams
+  , c_hipGraphMemsetNodeSetParams
+  , c_hipGraphNodeFindInClone
   , c_hipModuleGetFunction
   , c_hipModuleLaunchKernel
   , c_hipModuleLoad
   , c_hipModuleLoadData
   , c_hipModuleUnload
   , c_hipStreamAddCallback
+  , c_hipStreamBeginCapture
   , c_hipStreamCreate
   , c_hipStreamCreateWithFlags
   , c_hipStreamCreateWithPriority
   , c_hipStreamDestroy
+  , c_hipStreamEndCapture
+  , c_hipStreamGetCaptureInfo
+  , c_hipStreamIsCapturing
   , c_hipStreamQuery
   , c_hipStreamSynchronize
   , c_hipStreamWaitEvent
+  , mkHipHostNodeCallback
   , mkHipStreamCallback
   )
 import ROCm.HIP.Types
   ( HipDim3(..)
   , HipError
+  , HipFunctionAddress(..)
   , HipEventFlags
   , HipEventRecordFlags
   , HipHostMallocFlags
@@ -339,6 +429,31 @@ hipStreamWaitEvent :: HasCallStack => HipStream -> HipEvent -> CUInt -> IO ()
 hipStreamWaitEvent (HipStream stream) (HipEvent ev) flags =
   checkHip "hipStreamWaitEvent" =<< c_hipStreamWaitEvent stream ev flags
 
+hipStreamBeginCapture :: HasCallStack => HipStream -> HipStreamCaptureMode -> IO ()
+hipStreamBeginCapture (HipStream stream) mode =
+  checkHip "hipStreamBeginCapture" =<< c_hipStreamBeginCapture stream (unHipStreamCaptureMode mode)
+
+hipStreamEndCapture :: HasCallStack => HipStream -> IO HipGraph
+hipStreamEndCapture (HipStream stream) =
+  alloca $ \pGraph -> do
+    checkHip "hipStreamEndCapture" =<< c_hipStreamEndCapture stream pGraph
+    HipGraph <$> peek pGraph
+
+hipStreamGetCaptureInfo :: HasCallStack => HipStream -> IO (HipStreamCaptureStatus, Word64)
+hipStreamGetCaptureInfo (HipStream stream) =
+  alloca $ \pStatus ->
+    alloca $ \pId -> do
+      checkHip "hipStreamGetCaptureInfo" =<< c_hipStreamGetCaptureInfo stream pStatus pId
+      status <- peek pStatus
+      captureId <- peek pId
+      pure (status, captureId)
+
+hipStreamIsCapturing :: HasCallStack => HipStream -> IO HipStreamCaptureStatus
+hipStreamIsCapturing (HipStream stream) =
+  alloca $ \pStatus -> do
+    checkHip "hipStreamIsCapturing" =<< c_hipStreamIsCapturing stream pStatus
+    peek pStatus
+
 -- Events --------------------------------------------------------------------
 
 hipEventCreate :: HasCallStack => IO HipEvent
@@ -416,6 +531,38 @@ hipStreamCallbackEntry streamPtr status userData = do
     Right () -> pure ()
   freeHaskellFunPtr (hipStreamCallbackFunPtr payload)
   freeStablePtr stable
+
+data HipHostNodeCallbackPayload = HipHostNodeCallbackPayload
+  { hipHostNodeCallbackUser :: IO ()
+  , hipHostNodeCallbackFunPtr :: FunPtr HipHostNodeFun
+  }
+
+withHipHostNodeCallback :: HasCallStack => IO () -> (HipHostNodeParams -> IO a) -> IO a
+withHipHostNodeCallback userCb = bracket acquire release
+  where
+    acquire = do
+      funPtr <- mkHipHostNodeCallback hipHostNodeCallbackEntry
+      stable <- newStablePtr HipHostNodeCallbackPayload
+        { hipHostNodeCallbackUser = userCb
+        , hipHostNodeCallbackFunPtr = funPtr
+        }
+      pure
+        HipHostNodeParams
+          { hipHostNodeFn = funPtr
+          , hipHostNodeUserData = castStablePtrToPtr stable
+          }
+    release params = do
+      freeHaskellFunPtr (hipHostNodeFn params)
+      freeStablePtr (castPtrToStablePtr (hipHostNodeUserData params) :: StablePtr HipHostNodeCallbackPayload)
+
+hipHostNodeCallbackEntry :: Ptr () -> IO ()
+hipHostNodeCallbackEntry userData = do
+  let stable = castPtrToStablePtr userData :: StablePtr HipHostNodeCallbackPayload
+  payload <- deRefStablePtr stable
+  result <- try (hipHostNodeCallbackUser payload) :: IO (Either SomeException ())
+  case result of
+    Left e -> hPutStrLn stderr ("Exception escaped hipGraph host node callback: " <> displayException e)
+    Right () -> pure ()
 
 -- Modules -------------------------------------------------------------------
 
@@ -506,6 +653,41 @@ hipLaunchParamBufferSize = wordPtrToPtr (0x02 :: WordPtr)
 hipLaunchParamEnd :: Ptr ()
 hipLaunchParamEnd = wordPtrToPtr (0x03 :: WordPtr)
 
+-- Direct kernel launch -------------------------------------------------------
+
+hipLaunchKernel ::
+  HasCallStack =>
+  HipFunctionAddress ->
+  HipDim3 ->
+  HipDim3 ->
+  Ptr (Ptr ()) ->
+  Word32 ->
+  Maybe HipStream ->
+  IO ()
+hipLaunchKernel functionAddress grid block kernelParams sharedMemBytes mStream =
+  checkHip "hipLaunchKernel" =<<
+    c_hipLaunchKernel
+      functionAddress
+      (fromIntegral (hipDim3X grid))
+      (fromIntegral (hipDim3Y grid))
+      (fromIntegral (hipDim3Z grid))
+      (fromIntegral (hipDim3X block))
+      (fromIntegral (hipDim3Y block))
+      (fromIntegral (hipDim3Z block))
+      kernelParams
+      (fromIntegral sharedMemBytes)
+      (maybe nullPtr (\(HipStream s) -> s) mStream)
+
+hipLaunchKernelExC ::
+  HasCallStack =>
+  HipLaunchConfig ->
+  HipFunctionAddress ->
+  Ptr (Ptr ()) ->
+  IO ()
+hipLaunchKernelExC config functionAddress kernelParams =
+  with config $ \pConfig ->
+    checkHip "hipLaunchKernelExC" =<< c_hipLaunchKernelExC pConfig functionAddress kernelParams
+
 -- Graphs --------------------------------------------------------------------
 
 hipGraphCreate :: HasCallStack => Word32 -> IO HipGraph
@@ -526,11 +708,20 @@ hipGraphInstantiate (HipGraph graph) =
     checkHip "hipGraphInstantiate" =<< c_hipGraphInstantiate pExec graph nullPtr nullPtr 0
     HipGraphExec <$> peek pExec
 
+hipGraphInstantiateWithFlags :: HasCallStack => HipGraph -> HipGraphInstantiateFlags -> IO HipGraphExec
+hipGraphInstantiateWithFlags (HipGraph graph) flags =
+  alloca $ \pExec -> do
+    checkHip "hipGraphInstantiateWithFlags" =<< c_hipGraphInstantiateWithFlags pExec graph (unHipGraphInstantiateFlags flags)
+    HipGraphExec <$> peek pExec
+
 hipGraphExecDestroy :: HasCallStack => HipGraphExec -> IO ()
 hipGraphExecDestroy (HipGraphExec execGraph) = checkHip "hipGraphExecDestroy" =<< c_hipGraphExecDestroy execGraph
 
 withHipGraphExec :: HasCallStack => HipGraph -> (HipGraphExec -> IO a) -> IO a
 withHipGraphExec graph = bracket (hipGraphInstantiate graph) hipGraphExecDestroy
+
+withHipGraphExecWithFlags :: HasCallStack => HipGraph -> HipGraphInstantiateFlags -> (HipGraphExec -> IO a) -> IO a
+withHipGraphExecWithFlags graph flags = bracket (hipGraphInstantiateWithFlags graph flags) hipGraphExecDestroy
 
 hipGraphLaunch :: HasCallStack => HipGraphExec -> HipStream -> IO ()
 hipGraphLaunch (HipGraphExec execGraph) (HipStream stream) =
@@ -551,11 +742,222 @@ hipGraphAddMemcpyNode1D (HipGraph graph) deps dst src bytes kind =
       checkHip "hipGraphAddMemcpyNode1D" =<< c_hipGraphAddMemcpyNode1D pNode graph pDeps depCount dst src bytes kind
       HipGraphNode <$> peek pNode
 
+hipGraphAddKernelNode ::
+  HasCallStack =>
+  HipGraph ->
+  [HipGraphNode] ->
+  HipKernelNodeParams ->
+  IO HipGraphNode
+hipGraphAddKernelNode (HipGraph graph) deps params =
+  alloca $ \pNode ->
+    withGraphDependencies deps $ \pDeps depCount ->
+      with params $ \pParams -> do
+        checkHip "hipGraphAddKernelNode" =<< c_hipGraphAddKernelNode pNode graph pDeps depCount pParams
+        HipGraphNode <$> peek pNode
+
+hipGraphKernelNodeGetParams :: HasCallStack => HipGraphNode -> IO HipKernelNodeParams
+hipGraphKernelNodeGetParams (HipGraphNode node) =
+  alloca $ \pParams -> do
+    checkHip "hipGraphKernelNodeGetParams" =<< c_hipGraphKernelNodeGetParams node pParams
+    peek pParams
+
+hipGraphKernelNodeSetParams :: HasCallStack => HipGraphNode -> HipKernelNodeParams -> IO ()
+hipGraphKernelNodeSetParams (HipGraphNode node) params =
+  with params $ \pParams ->
+    checkHip "hipGraphKernelNodeSetParams" =<< c_hipGraphKernelNodeSetParams node pParams
+
+hipGraphExecKernelNodeSetParams :: HasCallStack => HipGraphExec -> HipGraphNode -> HipKernelNodeParams -> IO ()
+hipGraphExecKernelNodeSetParams (HipGraphExec execGraph) (HipGraphNode node) params =
+  with params $ \pParams ->
+    checkHip "hipGraphExecKernelNodeSetParams" =<< c_hipGraphExecKernelNodeSetParams execGraph node pParams
+
+hipGraphKernelNodeSetAttribute :: HasCallStack => HipGraphNode -> HipLaunchAttributeID -> HipLaunchAttributeValue -> IO ()
+hipGraphKernelNodeSetAttribute (HipGraphNode node) attrId value =
+  withHipLaunchAttributeValue attrId value $ \pValue ->
+    checkHip "hipGraphKernelNodeSetAttribute" =<< c_hipGraphKernelNodeSetAttribute node (unHipLaunchAttributeID attrId) pValue
+
+hipGraphKernelNodeGetAttribute :: HasCallStack => HipGraphNode -> HipLaunchAttributeID -> IO HipLaunchAttributeValue
+hipGraphKernelNodeGetAttribute (HipGraphNode node) attrId =
+  withHipLaunchAttributeValue attrId (defaultHipLaunchAttributeValue attrId) $ \pValue -> do
+    checkHip "hipGraphKernelNodeGetAttribute" =<< c_hipGraphKernelNodeGetAttribute node (unHipLaunchAttributeID attrId) pValue
+    peekHipLaunchAttributeValue attrId pValue
+
+hipGraphKernelNodeCopyAttributes :: HasCallStack => HipGraphNode -> HipGraphNode -> IO ()
+hipGraphKernelNodeCopyAttributes (HipGraphNode src) (HipGraphNode dst) =
+  checkHip "hipGraphKernelNodeCopyAttributes" =<< c_hipGraphKernelNodeCopyAttributes src dst
+
+hipGraphAddHostNode ::
+  HasCallStack =>
+  HipGraph ->
+  [HipGraphNode] ->
+  HipHostNodeParams ->
+  IO HipGraphNode
+hipGraphAddHostNode (HipGraph graph) deps params =
+  alloca $ \pNode ->
+    withGraphDependencies deps $ \pDeps depCount ->
+      with params $ \pParams -> do
+        checkHip "hipGraphAddHostNode" =<< c_hipGraphAddHostNode pNode graph pDeps depCount pParams
+        HipGraphNode <$> peek pNode
+
+hipGraphHostNodeGetParams :: HasCallStack => HipGraphNode -> IO HipHostNodeParams
+hipGraphHostNodeGetParams (HipGraphNode node) =
+  alloca $ \pParams -> do
+    checkHip "hipGraphHostNodeGetParams" =<< c_hipGraphHostNodeGetParams node pParams
+    peek pParams
+
+hipGraphHostNodeSetParams :: HasCallStack => HipGraphNode -> HipHostNodeParams -> IO ()
+hipGraphHostNodeSetParams (HipGraphNode node) params =
+  with params $ \pParams ->
+    checkHip "hipGraphHostNodeSetParams" =<< c_hipGraphHostNodeSetParams node pParams
+
+hipGraphExecHostNodeSetParams :: HasCallStack => HipGraphExec -> HipGraphNode -> HipHostNodeParams -> IO ()
+hipGraphExecHostNodeSetParams (HipGraphExec execGraph) (HipGraphNode node) params =
+  with params $ \pParams ->
+    checkHip "hipGraphExecHostNodeSetParams" =<< c_hipGraphExecHostNodeSetParams execGraph node pParams
+
+hipGraphAddMemsetNode ::
+  HasCallStack =>
+  HipGraph ->
+  [HipGraphNode] ->
+  HipMemsetParams ->
+  IO HipGraphNode
+hipGraphAddMemsetNode (HipGraph graph) deps params =
+  alloca $ \pNode ->
+    withGraphDependencies deps $ \pDeps depCount ->
+      with params $ \pParams -> do
+        checkHip "hipGraphAddMemsetNode" =<< c_hipGraphAddMemsetNode pNode graph pDeps depCount pParams
+        HipGraphNode <$> peek pNode
+
+hipGraphMemsetNodeGetParams :: HasCallStack => HipGraphNode -> IO HipMemsetParams
+hipGraphMemsetNodeGetParams (HipGraphNode node) =
+  alloca $ \pParams -> do
+    checkHip "hipGraphMemsetNodeGetParams" =<< c_hipGraphMemsetNodeGetParams node pParams
+    peek pParams
+
+hipGraphMemsetNodeSetParams :: HasCallStack => HipGraphNode -> HipMemsetParams -> IO ()
+hipGraphMemsetNodeSetParams (HipGraphNode node) params =
+  with params $ \pParams ->
+    checkHip "hipGraphMemsetNodeSetParams" =<< c_hipGraphMemsetNodeSetParams node pParams
+
+hipGraphExecMemsetNodeSetParams :: HasCallStack => HipGraphExec -> HipGraphNode -> HipMemsetParams -> IO ()
+hipGraphExecMemsetNodeSetParams (HipGraphExec execGraph) (HipGraphNode node) params =
+  with params $ \pParams ->
+    checkHip "hipGraphExecMemsetNodeSetParams" =<< c_hipGraphExecMemsetNodeSetParams execGraph node pParams
+
+hipGraphClone :: HasCallStack => HipGraph -> IO HipGraph
+hipGraphClone (HipGraph graph) =
+  alloca $ \pGraphClone -> do
+    checkHip "hipGraphClone" =<< c_hipGraphClone pGraphClone graph
+    HipGraph <$> peek pGraphClone
+
+withHipGraphClone :: HasCallStack => HipGraph -> (HipGraph -> IO a) -> IO a
+withHipGraphClone graph = bracket (hipGraphClone graph) hipGraphDestroy
+
+hipGraphNodeFindInClone :: HasCallStack => HipGraphNode -> HipGraph -> IO HipGraphNode
+hipGraphNodeFindInClone (HipGraphNode originalNode) (HipGraph graphClone) =
+  alloca $ \pNode -> do
+    checkHip "hipGraphNodeFindInClone" =<< c_hipGraphNodeFindInClone pNode originalNode graphClone
+    HipGraphNode <$> peek pNode
+
+hipGraphExecUpdate :: HasCallStack => HipGraphExec -> HipGraph -> IO HipGraphExecUpdateInfo
+hipGraphExecUpdate (HipGraphExec execGraph) (HipGraph graph) =
+  alloca $ \pErrorNode ->
+    alloca $ \pUpdateResult -> do
+      checkHip "hipGraphExecUpdate" =<< c_hipGraphExecUpdate execGraph graph pErrorNode pUpdateResult
+      errorNodePtr <- peek pErrorNode
+      updateResult <- peek pUpdateResult
+      pure
+        HipGraphExecUpdateInfo
+          { hipGraphExecUpdateErrorNode = if errorNodePtr == nullPtr then Nothing else Just (HipGraphNode errorNodePtr)
+          , hipGraphExecUpdateResult = updateResult
+          }
+
+hipGraphDebugDotPrint :: HasCallStack => HipGraph -> FilePath -> HipGraphDebugDotFlags -> IO ()
+hipGraphDebugDotPrint (HipGraph graph) path flags =
+  withCString path $ \cPath ->
+    checkHip "hipGraphDebugDotPrint" =<< c_hipGraphDebugDotPrint graph cPath (unHipGraphDebugDotFlags flags)
+
+hipGraphAddChildGraphNode ::
+  HasCallStack =>
+  HipGraph ->
+  [HipGraphNode] ->
+  HipGraph ->
+  IO HipGraphNode
+hipGraphAddChildGraphNode (HipGraph graph) deps (HipGraph childGraph) =
+  alloca $ \pNode ->
+    withGraphDependencies deps $ \pDeps depCount -> do
+      checkHip "hipGraphAddChildGraphNode" =<< c_hipGraphAddChildGraphNode pNode graph pDeps depCount childGraph
+      HipGraphNode <$> peek pNode
+
+hipGraphChildGraphNodeGetGraph :: HasCallStack => HipGraphNode -> IO HipGraph
+hipGraphChildGraphNodeGetGraph (HipGraphNode node) =
+  alloca $ \pGraph -> do
+    checkHip "hipGraphChildGraphNodeGetGraph" =<< c_hipGraphChildGraphNodeGetGraph node pGraph
+    HipGraph <$> peek pGraph
+
+hipGraphAddEventRecordNode ::
+  HasCallStack =>
+  HipGraph ->
+  [HipGraphNode] ->
+  HipEvent ->
+  IO HipGraphNode
+hipGraphAddEventRecordNode (HipGraph graph) deps (HipEvent event) =
+  alloca $ \pNode ->
+    withGraphDependencies deps $ \pDeps depCount -> do
+      checkHip "hipGraphAddEventRecordNode" =<< c_hipGraphAddEventRecordNode pNode graph pDeps depCount event
+      HipGraphNode <$> peek pNode
+
+hipGraphEventRecordNodeGetEvent :: HasCallStack => HipGraphNode -> IO HipEvent
+hipGraphEventRecordNodeGetEvent (HipGraphNode node) =
+  alloca $ \pEvent -> do
+    checkHip "hipGraphEventRecordNodeGetEvent" =<< c_hipGraphEventRecordNodeGetEvent node pEvent
+    HipEvent <$> peek pEvent
+
+hipGraphEventRecordNodeSetEvent :: HasCallStack => HipGraphNode -> HipEvent -> IO ()
+hipGraphEventRecordNodeSetEvent (HipGraphNode node) (HipEvent event) =
+  checkHip "hipGraphEventRecordNodeSetEvent" =<< c_hipGraphEventRecordNodeSetEvent node event
+
+hipGraphExecEventRecordNodeSetEvent :: HasCallStack => HipGraphExec -> HipGraphNode -> HipEvent -> IO ()
+hipGraphExecEventRecordNodeSetEvent (HipGraphExec execGraph) (HipGraphNode node) (HipEvent event) =
+  checkHip "hipGraphExecEventRecordNodeSetEvent" =<< c_hipGraphExecEventRecordNodeSetEvent execGraph node event
+
+hipGraphAddEventWaitNode ::
+  HasCallStack =>
+  HipGraph ->
+  [HipGraphNode] ->
+  HipEvent ->
+  IO HipGraphNode
+hipGraphAddEventWaitNode (HipGraph graph) deps (HipEvent event) =
+  alloca $ \pNode ->
+    withGraphDependencies deps $ \pDeps depCount -> do
+      checkHip "hipGraphAddEventWaitNode" =<< c_hipGraphAddEventWaitNode pNode graph pDeps depCount event
+      HipGraphNode <$> peek pNode
+
+hipGraphEventWaitNodeGetEvent :: HasCallStack => HipGraphNode -> IO HipEvent
+hipGraphEventWaitNodeGetEvent (HipGraphNode node) =
+  alloca $ \pEvent -> do
+    checkHip "hipGraphEventWaitNodeGetEvent" =<< c_hipGraphEventWaitNodeGetEvent node pEvent
+    HipEvent <$> peek pEvent
+
+hipGraphEventWaitNodeSetEvent :: HasCallStack => HipGraphNode -> HipEvent -> IO ()
+hipGraphEventWaitNodeSetEvent (HipGraphNode node) (HipEvent event) =
+  checkHip "hipGraphEventWaitNodeSetEvent" =<< c_hipGraphEventWaitNodeSetEvent node event
+
+hipGraphExecEventWaitNodeSetEvent :: HasCallStack => HipGraphExec -> HipGraphNode -> HipEvent -> IO ()
+hipGraphExecEventWaitNodeSetEvent (HipGraphExec execGraph) (HipGraphNode node) (HipEvent event) =
+  checkHip "hipGraphExecEventWaitNodeSetEvent" =<< c_hipGraphExecEventWaitNodeSetEvent execGraph node event
+
 withGraphDependencies :: [HipGraphNode] -> (Ptr (Ptr tag) -> CSize -> IO a) -> IO a
 withGraphDependencies [] k = k nullPtr 0
 withGraphDependencies deps k =
   withArray (map (\(HipGraphNode p) -> castPtr p) deps) $ \pDeps ->
     k pDeps (fromIntegral (length deps))
+
+defaultHipLaunchAttributeValue :: HipLaunchAttributeID -> HipLaunchAttributeValue
+defaultHipLaunchAttributeValue attrId
+  | attrId == HipLaunchAttributeCooperative = HipLaunchAttributeValueCooperative False
+  | attrId == HipLaunchAttributePriority = HipLaunchAttributeValuePriority 0
+  | otherwise = error ("Unsupported hipLaunchAttributeID in defaultHipLaunchAttributeValue: " <> show attrId)
 
 -- Error state ---------------------------------------------------------------
 

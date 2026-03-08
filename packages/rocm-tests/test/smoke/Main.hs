@@ -1,8 +1,10 @@
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 module Main (main) where
 
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Data.Bits ((.|.))
 import Control.Exception (SomeException, bracket, bracket_, displayException, try)
 import Control.Monad (forM)
 import Data.Char (isSpace)
@@ -13,41 +15,80 @@ import Foreign.C.Types (CDouble(..), CFloat(..), CInt, CSize)
 import Foreign.Marshal.Alloc (free)
 import Foreign.Marshal.Array (mallocArray, peekArray, pokeArray, withArray)
 import Foreign.Marshal.Utils (with)
-import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
+import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (sizeOf)
+import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, getTemporaryDirectory)
 import System.Environment (lookupEnv)
-import System.Exit (exitFailure, exitSuccess)
-import System.Process (readProcess)
+import System.Exit (ExitCode(..), exitFailure, exitSuccess)
+import System.FilePath ((</>))
+import System.Posix.DynamicLinker (RTLDFlags(RTLD_LOCAL, RTLD_NOW), dlclose, dlopen, dlsym)
+import System.Process (readProcess, readProcessWithExitCode)
 
 import ROCm.FFI.Core.Types (DevicePtr(..), HostPtr(..), PinnedHostPtr(..))
 import ROCm.HIP
   ( HipDim3(..)
+  , HipFunctionAddress(..)
+  , HipGraphExecUpdateInfo(..)
+  , HipGraphInstantiateFlags(..)
+  , HipKernelNodeParams(..)
+  , HipLaunchAttributeValue(..)
+  , HipLaunchConfig(..)
+  , HipMemsetParams(..)
+  , hipDeviceSynchronize
   , hipEventCreate
+  , hipEventCreateWithFlags
   , hipEventDestroy
   , hipEventElapsedTime
   , hipEventQuery
   , hipEventRecord
-  , hipEventSynchronize
-  , hipEventCreateWithFlags
   , hipEventRecordWithFlags
+  , hipEventSynchronize
   , hipFree
-  , hipDeviceSynchronize
   , hipGetCurrentDeviceGcnArchName
   , hipGetDeviceCount
+  , hipGraphAddChildGraphNode
+  , hipGraphAddEventRecordNode
+  , hipGraphAddEventWaitNode
+  , hipGraphAddHostNode
+  , hipGraphAddKernelNode
   , hipGraphAddMemcpyNode1D
+  , hipGraphAddMemsetNode
+  , hipGraphChildGraphNodeGetGraph
   , hipGraphCreate
+  , hipGraphDebugDotPrint
   , hipGraphDestroy
+  , hipGraphEventRecordNodeGetEvent
+  , hipGraphEventRecordNodeSetEvent
+  , hipGraphEventWaitNodeGetEvent
+  , hipGraphEventWaitNodeSetEvent
   , hipGraphExecDestroy
+  , hipGraphExecEventRecordNodeSetEvent
+  , hipGraphExecEventWaitNodeSetEvent
+  , hipGraphExecHostNodeSetParams
+  , hipGraphExecKernelNodeSetParams
+  , hipGraphExecMemsetNodeSetParams
+  , hipGraphExecUpdate
+  , hipGraphHostNodeGetParams
+  , hipGraphHostNodeSetParams
   , hipGraphInstantiate
+  , hipGraphInstantiateWithFlags
+  , hipGraphKernelNodeCopyAttributes
+  , hipGraphKernelNodeGetAttribute
+  , hipGraphKernelNodeGetParams
+  , hipGraphKernelNodeSetAttribute
+  , hipGraphKernelNodeSetParams
   , hipGraphLaunch
-  , hipModuleGetFunction
-  , hipModuleLaunchKernel
-  , withHipModuleData
+  , hipGraphMemsetNodeGetParams
+  , hipGraphMemsetNodeSetParams
+  , hipGraphNodeFindInClone
   , hipHostFree
   , hipHostMallocBytes
   , hipHostMallocBytesWithFlags
   , hipHostRegister
   , hipHostUnregister
+  , hipLaunchAttributeCooperative
+  , hipLaunchKernel
+  , hipLaunchKernelExC
   , hipMallocBytes
   , hipMemcpyAsync
   , hipMemcpyD2H
@@ -56,17 +97,34 @@ import ROCm.HIP
   , hipMemcpyH2DAsync
   , hipMemcpyH2DWithStream
   , hipMemset
+  , hipModuleGetFunction
+  , hipModuleLaunchKernel
   , hipStreamAddCallback
+  , hipStreamBeginCapture
   , hipStreamCreate
   , hipStreamCreateWithFlags
   , hipStreamDestroy
+  , hipStreamEndCapture
+  , hipStreamGetCaptureInfo
+  , hipStreamIsCapturing
   , hipStreamQuery
   , hipStreamSynchronize
   , hipStreamWaitEvent
+  , withHipGraphClone
+  , withHipHostNodeCallback
+  , withHipLaunchAttributes
+  , withHipModuleData
   , pattern HipEventBlockingSync
   , pattern HipEventRecordExternal
   , pattern HipHostMallocPortable
   , pattern HipHostRegisterMapped
+  , pattern HipGraphDebugDotFlagsHandles
+  , pattern HipGraphDebugDotFlagsMemsetNodeParams
+  , pattern HipGraphDebugDotFlagsVerbose
+  , pattern HipGraphExecUpdateSuccess
+  , pattern HipLaunchAttributeCooperative
+  , pattern HipStreamCaptureModeRelaxed
+  , pattern HipStreamCaptureStatusActive
   , pattern HipMemcpyDeviceToHost
   , pattern HipMemcpyHostToDevice
   , pattern HipStreamNonBlocking
@@ -175,6 +233,9 @@ import ROCm.RocSOLVER
   , rocsolverSsyev
   )
 
+foreign import ccall "dynamic"
+  mkKernelAddressGetter :: FunPtr (IO (Ptr ())) -> IO (Ptr ())
+
 data SmokeResult
   = SmokePassed
   | SmokeSkipped String
@@ -192,6 +253,16 @@ main = do
       , ("hip-event-query-timing", hipEventQueryTimingSmoke)
       , ("hip-module-launch", hipModuleLaunchSmoke)
       , ("hip-graph-memcpy", hipGraphMemcpySmoke)
+      , ("hip-launch-kernel-direct", hipLaunchKernelDirectSmoke)
+      , ("hip-graph-kernel-node", hipGraphKernelNodeSmoke)
+      , ("hip-launch-kernel-exc", hipLaunchKernelExCSmoke)
+      , ("hip-launch-kernel-exc-cooperative-attr", hipLaunchKernelExCCooperativeAttrSmoke)
+      , ("hip-graph-host-node", hipGraphHostNodeSmoke)
+      , ("hip-graph-memset-node", hipGraphMemsetNodeSmoke)
+      , ("hip-stream-capture-graph", hipStreamCaptureGraphSmoke)
+      , ("hip-graph-kernel-node-cooperative-attr", hipGraphKernelNodeCooperativeAttrSmoke)
+      , ("hip-graph-update-clone-debug-dot", hipGraphUpdateCloneDebugDotSmoke)
+      , ("hip-graph-child-event-nodes", hipGraphChildEventNodesSmoke)
       , ("rocfft-c2c-1d", rocfftSmoke)
       , ("rocfft-c2c-normalized", rocfftNormalizedSmoke)
       , ("rocfft-batched-notinplace", rocfftBatchedNotInplaceSmoke)
@@ -494,6 +565,524 @@ hipGraphMemcpySmoke = do
                     then pure SmokePassed
                     else fail ("hip graph memcpy mismatch: expected=" <> show input <> ", got=" <> show output)
 
+hipLaunchKernelDirectSmoke :: IO SmokeResult
+hipLaunchKernelDirectSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      hipccReady <- requireHipcc
+      case hipccReady of
+        Just skipMsg -> pure (SmokeSkipped skipMsg)
+        Nothing -> do
+          let n = 256 :: Int
+              threads = 64 :: Int
+              blocks = (n + threads - 1) `div` threads
+              input = fmap (CFloat . fromIntegral) [0 .. n - 1]
+              expected = fmap (\(CFloat x) -> CFloat (x + 1)) input
+              bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+              grid = HipDim3 (fromIntegral blocks) 1 1
+              block = HipDim3 (fromIntegral threads) 1 1
+          bracket (mallocArray n) free $ \hIn ->
+            bracket (mallocArray n) free $ \hOut -> do
+              pokeArray hIn input
+              bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dIn ->
+                bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dOut ->
+                  bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                    withDirectAddOneKernelAddress "hip_launch_kernel_direct" $ \kernelAddress -> do
+                      hipMemcpyH2D dIn (HostPtr hIn) bytes
+                      let DevicePtr pIn = dIn
+                          DevicePtr pOut = dOut
+                          nArg = fromIntegral n :: CInt
+                      with pOut $ \pArgOut ->
+                        with pIn $ \pArgIn ->
+                          with nArg $ \pArgN ->
+                            withArray [castPtr pArgOut, castPtr pArgIn, castPtr pArgN] $ \kernelParams -> do
+                              hipLaunchKernel kernelAddress grid block kernelParams 0 (Just stream)
+                              hipStreamSynchronize stream
+                              hipMemcpyD2H (HostPtr hOut) dOut bytes
+                              output <- peekArray n hOut
+                              if output == expected
+                                then pure SmokePassed
+                                else fail ("hipLaunchKernel mismatch: expected=" <> show expected <> ", got=" <> show output)
+
+hipGraphKernelNodeSmoke :: IO SmokeResult
+hipGraphKernelNodeSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      hipccReady <- requireHipcc
+      case hipccReady of
+        Just skipMsg -> pure (SmokeSkipped skipMsg)
+        Nothing -> do
+          let n = 128 :: Int
+              threads = 64 :: Int
+              blocks = (n + threads - 1) `div` threads
+              input = fmap (CFloat . fromIntegral . (`mod` 13)) [0 .. n - 1]
+              expected = fmap (\(CFloat x) -> CFloat (x + 1)) input
+              bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+              grid = HipDim3 (fromIntegral blocks) 1 1
+              block = HipDim3 (fromIntegral threads) 1 1
+          bracket (mallocArray n) free $ \hIn ->
+            bracket (mallocArray n) free $ \hOut -> do
+              pokeArray hIn input
+              bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dIn ->
+                bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dOut ->
+                  bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                    withDirectAddOneKernelAddress "hip_graph_kernel_node" $ \kernelAddress -> do
+                      let DevicePtr pIn = dIn
+                          DevicePtr pOut = dOut
+                          nArg = fromIntegral n :: CInt
+                      with pOut $ \pArgOut ->
+                        with pIn $ \pArgIn ->
+                          with nArg $ \pArgN ->
+                            withArray [castPtr pArgOut, castPtr pArgIn, castPtr pArgN] $ \kernelParams ->
+                              bracket (hipGraphCreate 0) hipGraphDestroy $ \graph -> do
+                                h2dNode <- hipGraphAddMemcpyNode1D graph [] (castPtr pIn) (castPtr hIn) bytes HipMemcpyHostToDevice
+                                let params =
+                                      HipKernelNodeParams
+                                        { hipKernelNodeBlockDim = block
+                                        , hipKernelNodeExtra = nullPtr
+                                        , hipKernelNodeFunc = kernelAddress
+                                        , hipKernelNodeGridDim = grid
+                                        , hipKernelNodeKernelParams = kernelParams
+                                        , hipKernelNodeSharedMemBytes = 0
+                                        }
+                                kernelNode <- hipGraphAddKernelNode graph [h2dNode] params
+                                gotParams <- hipGraphKernelNodeGetParams kernelNode
+                                if hipKernelNodeBlockDim gotParams /= block
+                                  || hipKernelNodeGridDim gotParams /= grid
+                                  || hipKernelNodeFunc gotParams /= kernelAddress
+                                  || hipKernelNodeSharedMemBytes gotParams /= 0
+                                  then fail ("hipGraphKernelNodeGetParams mismatch: got=" <> show gotParams)
+                                  else pure ()
+                                hipGraphKernelNodeSetParams kernelNode params
+                                _ <- hipGraphAddMemcpyNode1D graph [kernelNode] (castPtr hOut) (castPtr pOut) bytes HipMemcpyDeviceToHost
+                                execGraph <- hipGraphInstantiate graph
+                                bracket_ (pure ()) (hipGraphExecDestroy execGraph) $ do
+                                  hipGraphExecKernelNodeSetParams execGraph kernelNode params
+                                  hipGraphLaunch execGraph stream
+                                  hipStreamSynchronize stream
+                                  output <- peekArray n hOut
+                                  if output == expected
+                                    then pure SmokePassed
+                                    else fail ("hip graph kernel node mismatch: expected=" <> show expected <> ", got=" <> show output)
+
+hipLaunchKernelExCSmoke :: IO SmokeResult
+hipLaunchKernelExCSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      hipccReady <- requireHipcc
+      case hipccReady of
+        Just skipMsg -> pure (SmokeSkipped skipMsg)
+        Nothing -> do
+          let n = 256 :: Int
+              threads = 64 :: Int
+              blocks = (n + threads - 1) `div` threads
+              input = fmap (CFloat . fromIntegral) [0 .. n - 1]
+              expected = fmap (\(CFloat x) -> CFloat (x + 1)) input
+              bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+              grid = HipDim3 (fromIntegral blocks) 1 1
+              block = HipDim3 (fromIntegral threads) 1 1
+          bracket (mallocArray n) free $ \hIn ->
+            bracket (mallocArray n) free $ \hOut -> do
+              pokeArray hIn input
+              bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dIn ->
+                bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dOut ->
+                  bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                    withDirectAddOneKernelAddress "hip_launch_kernel_exc" $ \kernelAddress -> do
+                      hipMemcpyH2D dIn (HostPtr hIn) bytes
+                      let DevicePtr pIn = dIn
+                          DevicePtr pOut = dOut
+                          nArg = fromIntegral n :: CInt
+                          config =
+                            HipLaunchConfig
+                              { hipLaunchConfigGridDim = grid
+                              , hipLaunchConfigBlockDim = block
+                              , hipLaunchConfigDynamicSmemBytes = 0
+                              , hipLaunchConfigStream = Just stream
+                              , hipLaunchConfigAttrs = nullPtr
+                              , hipLaunchConfigNumAttrs = 0
+                              }
+                      with pOut $ \pArgOut ->
+                        with pIn $ \pArgIn ->
+                          with nArg $ \pArgN ->
+                            withArray [castPtr pArgOut, castPtr pArgIn, castPtr pArgN] $ \kernelParams -> do
+                              hipLaunchKernelExC config kernelAddress kernelParams
+                              hipStreamSynchronize stream
+                              hipMemcpyD2H (HostPtr hOut) dOut bytes
+                              output <- peekArray n hOut
+                              if output == expected
+                                then pure SmokePassed
+                                else fail ("hipLaunchKernelExC mismatch: expected=" <> show expected <> ", got=" <> show output)
+
+hipLaunchKernelExCCooperativeAttrSmoke :: IO SmokeResult
+hipLaunchKernelExCCooperativeAttrSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      hipccReady <- requireHipcc
+      case hipccReady of
+        Just skipMsg -> pure (SmokeSkipped skipMsg)
+        Nothing -> do
+          let n = 64 :: Int
+              input = fmap (CFloat . fromIntegral) [0 .. n - 1]
+              expected = fmap (\(CFloat x) -> CFloat (x + 1)) input
+              bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+              grid = HipDim3 1 1 1
+              block = HipDim3 64 1 1
+          bracket (mallocArray n) free $ \hIn ->
+            bracket (mallocArray n) free $ \hOut -> do
+              pokeArray hIn input
+              bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dIn ->
+                bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dOut ->
+                  bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                    withDirectAddOneKernelAddress "hip_launch_kernel_exc_cooperative_attr" $ \kernelAddress ->
+                      withHipLaunchAttributes [hipLaunchAttributeCooperative True] $ \pAttrs attrCount -> do
+                        hipMemcpyH2D dIn (HostPtr hIn) bytes
+                        let DevicePtr pIn = dIn
+                            DevicePtr pOut = dOut
+                            nArg = fromIntegral n :: CInt
+                            config =
+                              HipLaunchConfig
+                                { hipLaunchConfigGridDim = grid
+                                , hipLaunchConfigBlockDim = block
+                                , hipLaunchConfigDynamicSmemBytes = 0
+                                , hipLaunchConfigStream = Just stream
+                                , hipLaunchConfigAttrs = castPtr pAttrs
+                                , hipLaunchConfigNumAttrs = attrCount
+                                }
+                        with pOut $ \pArgOut ->
+                          with pIn $ \pArgIn ->
+                            with nArg $ \pArgN ->
+                              withArray [castPtr pArgOut, castPtr pArgIn, castPtr pArgN] $ \kernelParams -> do
+                                hipLaunchKernelExC config kernelAddress kernelParams
+                                hipStreamSynchronize stream
+                                hipMemcpyD2H (HostPtr hOut) dOut bytes
+                                output <- peekArray n hOut
+                                if output == expected
+                                  then pure SmokePassed
+                                  else fail ("hipLaunchKernelExC cooperative attr mismatch: expected=" <> show expected <> ", got=" <> show output)
+
+hipStreamCaptureGraphSmoke :: IO SmokeResult
+hipStreamCaptureGraphSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      hipccReady <- requireHipcc
+      case hipccReady of
+        Just skipMsg -> pure (SmokeSkipped skipMsg)
+        Nothing -> do
+          let n = 64 :: Int
+              input = fmap (CFloat . fromIntegral) [0 .. n - 1]
+              expected = fmap (\(CFloat x) -> CFloat (x + 1)) input
+              bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+              grid = HipDim3 1 1 1
+              block = HipDim3 64 1 1
+          bracket (hipHostMallocBytes bytes :: IO (PinnedHostPtr CFloat)) hipHostFree $ \hInPinned ->
+            bracket (hipHostMallocBytes bytes :: IO (PinnedHostPtr CFloat)) hipHostFree $ \hOutPinned -> do
+              let PinnedHostPtr pInPinned = hInPinned
+                  PinnedHostPtr pOutPinned = hOutPinned
+              pokeArray pInPinned input
+              bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dIn ->
+                bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dOut ->
+                  bracket hipStreamCreate hipStreamDestroy $ \stream ->
+                    withDirectAddOneKernelAddress "hip_stream_capture_graph" $ \kernelAddress -> do
+                      hipStreamBeginCapture stream HipStreamCaptureModeRelaxed
+                      status1 <- hipStreamIsCapturing stream
+                      if status1 /= HipStreamCaptureStatusActive
+                        then fail ("hipStreamIsCapturing expected active, got=" <> show status1)
+                        else pure ()
+                      (status2, captureId) <- hipStreamGetCaptureInfo stream
+                      if status2 /= HipStreamCaptureStatusActive || captureId == 0
+                        then fail ("hipStreamGetCaptureInfo mismatch: status=" <> show status2 <> ", id=" <> show captureId)
+                        else pure ()
+                      hipMemcpyH2DAsync dIn hInPinned bytes stream
+                      let DevicePtr pIn = dIn
+                          DevicePtr pOut = dOut
+                          nArg = fromIntegral n :: CInt
+                      with pOut $ \pArgOut ->
+                        with pIn $ \pArgIn ->
+                          with nArg $ \pArgN ->
+                            withArray [castPtr pArgOut, castPtr pArgIn, castPtr pArgN] $ \kernelParams -> do
+                              hipLaunchKernel kernelAddress grid block kernelParams 0 (Just stream)
+                              hipMemcpyD2HAsync hOutPinned dOut bytes stream
+                              capturedGraph <- hipStreamEndCapture stream
+                              bracket (pure capturedGraph) hipGraphDestroy $ \graph -> do
+                                execGraph <- hipGraphInstantiateWithFlags graph (HipGraphInstantiateFlags 0)
+                                bracket_ (pure ()) (hipGraphExecDestroy execGraph) $ do
+                                  hipGraphLaunch execGraph stream
+                                  hipStreamSynchronize stream
+                                  output <- peekArray n pOutPinned
+                                  if output == expected
+                                    then pure SmokePassed
+                                    else fail ("hip stream capture graph mismatch: expected=" <> show expected <> ", got=" <> show output)
+
+hipGraphKernelNodeCooperativeAttrSmoke :: IO SmokeResult
+hipGraphKernelNodeCooperativeAttrSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      hipccReady <- requireHipcc
+      case hipccReady of
+        Just skipMsg -> pure (SmokeSkipped skipMsg)
+        Nothing -> do
+          let n = 64 :: Int
+              bytes = fromIntegral (n * sizeOf (undefined :: CFloat)) :: CSize
+              grid = HipDim3 1 1 1
+              block = HipDim3 64 1 1
+          bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dIn ->
+            bracket (hipMallocBytes bytes :: IO (DevicePtr CFloat)) hipFree $ \dOut ->
+              withDirectAddOneKernelAddress "hip_graph_kernel_node_cooperative_attr" $ \kernelAddress -> do
+                let DevicePtr pIn = dIn
+                    DevicePtr pOut = dOut
+                    nArg = fromIntegral n :: CInt
+                with pOut $ \pArgOut ->
+                  with pIn $ \pArgIn ->
+                    with nArg $ \pArgN ->
+                      withArray [castPtr pArgOut, castPtr pArgIn, castPtr pArgN] $ \kernelParams ->
+                        bracket (hipGraphCreate 0) hipGraphDestroy $ \graph -> do
+                          let params =
+                                HipKernelNodeParams
+                                  { hipKernelNodeBlockDim = block
+                                  , hipKernelNodeExtra = nullPtr
+                                  , hipKernelNodeFunc = kernelAddress
+                                  , hipKernelNodeGridDim = grid
+                                  , hipKernelNodeKernelParams = kernelParams
+                                  , hipKernelNodeSharedMemBytes = 0
+                                  }
+                          node1 <- hipGraphAddKernelNode graph [] params
+                          node2 <- hipGraphAddKernelNode graph [] params
+                          hipGraphKernelNodeSetAttribute node1 HipLaunchAttributeCooperative (HipLaunchAttributeValueCooperative True)
+                          value1 <- hipGraphKernelNodeGetAttribute node1 HipLaunchAttributeCooperative
+                          if value1 /= HipLaunchAttributeValueCooperative True
+                            then fail ("hipGraphKernelNodeGetAttribute mismatch: got=" <> show value1)
+                            else pure ()
+                          hipGraphKernelNodeCopyAttributes node1 node2
+                          value2 <- hipGraphKernelNodeGetAttribute node2 HipLaunchAttributeCooperative
+                          if value2 /= HipLaunchAttributeValueCooperative True
+                            then fail ("hipGraphKernelNodeCopyAttributes mismatch: got=" <> show value2)
+                            else pure SmokePassed
+
+hipGraphHostNodeSmoke :: IO SmokeResult
+hipGraphHostNodeSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      callbackMv <- newEmptyMVar
+      let bytesCount = 32 :: Int
+          bytes = fromIntegral bytesCount :: CSize
+          paramsFor dst value =
+            HipMemsetParams
+              { hipMemsetDst = dst
+              , hipMemsetElementSize = 1
+              , hipMemsetHeight = 1
+              , hipMemsetPitch = bytes
+              , hipMemsetValue = fromIntegral value
+              , hipMemsetWidth = bytes
+              }
+      bracket (mallocArray bytesCount :: IO (Ptr Word8)) free $ \hOut ->
+        bracket (hipMallocBytes bytes :: IO (DevicePtr Word8)) hipFree $ \dBuf ->
+          bracket hipStreamCreate hipStreamDestroy $ \stream ->
+            withHipHostNodeCallback (putMVar callbackMv (1 :: Int)) $ \params1 ->
+              withHipHostNodeCallback (putMVar callbackMv (2 :: Int)) $ \params2 ->
+                withHipHostNodeCallback (putMVar callbackMv (3 :: Int)) $ \params3 ->
+                  bracket (hipGraphCreate 0) hipGraphDestroy $ \graph -> do
+                    let DevicePtr pBuf = dBuf
+                        memsetParams = paramsFor (castPtr pBuf) (0x33 :: Word8)
+                    memsetNode <- hipGraphAddMemsetNode graph [] memsetParams
+                    hostNode <- hipGraphAddHostNode graph [memsetNode] params1
+                    gotParams <- hipGraphHostNodeGetParams hostNode
+                    if gotParams /= params1
+                      then fail ("hipGraphHostNodeGetParams mismatch: got=" <> show gotParams)
+                      else pure ()
+                    hipGraphHostNodeSetParams hostNode params2
+                    _ <- hipGraphAddMemcpyNode1D graph [hostNode] (castPtr hOut) (castPtr pBuf) bytes HipMemcpyDeviceToHost
+                    execGraph <- hipGraphInstantiate graph
+                    bracket_ (pure ()) (hipGraphExecDestroy execGraph) $ do
+                      hipGraphExecHostNodeSetParams execGraph hostNode params3
+                      hipGraphLaunch execGraph stream
+                      hipStreamSynchronize stream
+                      callbackResult <- takeMVar callbackMv
+                      output <- peekArray bytesCount hOut
+                      if callbackResult /= 3
+                        then fail ("hip graph host node callback mismatch: expected 3, got=" <> show callbackResult)
+                        else
+                          if output == replicate bytesCount 0x33
+                            then pure SmokePassed
+                            else fail ("hip graph host node data mismatch: expected all 0x33, got=" <> show output)
+
+hipGraphMemsetNodeSmoke :: IO SmokeResult
+hipGraphMemsetNodeSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      let bytesCount = 32 :: Int
+          bytes = fromIntegral bytesCount :: CSize
+          paramsFor dst value =
+            HipMemsetParams
+              { hipMemsetDst = dst
+              , hipMemsetElementSize = 1
+              , hipMemsetHeight = 1
+              , hipMemsetPitch = bytes
+              , hipMemsetValue = fromIntegral value
+              , hipMemsetWidth = bytes
+              }
+      bracket (mallocArray bytesCount :: IO (Ptr Word8)) free $ \hOut ->
+        bracket (hipMallocBytes bytes :: IO (DevicePtr Word8)) hipFree $ \dBuf ->
+          bracket hipStreamCreate hipStreamDestroy $ \stream ->
+            bracket (hipGraphCreate 0) hipGraphDestroy $ \graph -> do
+              let DevicePtr pBuf = dBuf
+                  params1 = paramsFor (castPtr pBuf) (0x11 :: Word8)
+                  params2 = paramsFor (castPtr pBuf) (0x22 :: Word8)
+                  params3 = paramsFor (castPtr pBuf) (0x33 :: Word8)
+              memsetNode <- hipGraphAddMemsetNode graph [] params1
+              gotParams <- hipGraphMemsetNodeGetParams memsetNode
+              if gotParams /= params1
+                then fail ("hipGraphMemsetNodeGetParams mismatch: got=" <> show gotParams)
+                else pure ()
+              hipGraphMemsetNodeSetParams memsetNode params2
+              _ <- hipGraphAddMemcpyNode1D graph [memsetNode] (castPtr hOut) (castPtr pBuf) bytes HipMemcpyDeviceToHost
+              execGraph <- hipGraphInstantiate graph
+              bracket_ (pure ()) (hipGraphExecDestroy execGraph) $ do
+                hipGraphExecMemsetNodeSetParams execGraph memsetNode params3
+                hipGraphLaunch execGraph stream
+                hipStreamSynchronize stream
+                output <- peekArray bytesCount hOut
+                if output == replicate bytesCount 0x33
+                  then pure SmokePassed
+                  else fail ("hip graph memset node mismatch: expected all 0x33, got=" <> show output)
+
+hipGraphUpdateCloneDebugDotSmoke :: IO SmokeResult
+hipGraphUpdateCloneDebugDotSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      let bytesCount = 32 :: Int
+          bytes = fromIntegral bytesCount :: CSize
+          paramsFor dst value =
+            HipMemsetParams
+              { hipMemsetDst = dst
+              , hipMemsetElementSize = 1
+              , hipMemsetHeight = 1
+              , hipMemsetPitch = bytes
+              , hipMemsetValue = fromIntegral value
+              , hipMemsetWidth = bytes
+              }
+      tempDir <- getTemporaryDirectory
+      let dotDir = tempDir </> "haskell-rocm-graph-dot"
+          dotPath = dotDir </> "hip_graph_update_clone_debug.dot"
+      createDirectoryIfMissing True dotDir
+      bracket (mallocArray bytesCount :: IO (Ptr Word8)) free $ \hOut ->
+        bracket (hipMallocBytes bytes :: IO (DevicePtr Word8)) hipFree $ \dBuf ->
+          bracket hipStreamCreate hipStreamDestroy $ \stream -> do
+            let DevicePtr pBuf = dBuf
+            bracket (hipGraphCreate 0) hipGraphDestroy $ \graph1 ->
+              bracket (hipGraphCreate 0) hipGraphDestroy $ \graph2 -> do
+                memsetNode1 <- hipGraphAddMemsetNode graph1 [] (paramsFor (castPtr pBuf) (0x11 :: Word8))
+                _ <- hipGraphAddMemcpyNode1D graph1 [memsetNode1] (castPtr hOut) (castPtr pBuf) bytes HipMemcpyDeviceToHost
+                memsetNode2 <- hipGraphAddMemsetNode graph2 [] (paramsFor (castPtr pBuf) (0x44 :: Word8))
+                _ <- hipGraphAddMemcpyNode1D graph2 [memsetNode2] (castPtr hOut) (castPtr pBuf) bytes HipMemcpyDeviceToHost
+                withHipGraphClone graph1 $ \graphClone -> do
+                  cloneNode <- hipGraphNodeFindInClone memsetNode1 graphClone
+                  _ <- hipGraphMemsetNodeGetParams cloneNode
+                  hipGraphDebugDotPrint graphClone dotPath (HipGraphDebugDotFlagsVerbose .|. HipGraphDebugDotFlagsMemsetNodeParams .|. HipGraphDebugDotFlagsHandles)
+                  dotExists <- doesFileExist dotPath
+                  if not dotExists
+                    then fail "hipGraphDebugDotPrint did not produce the DOT file"
+                    else pure ()
+                  dotContents <- readFile dotPath
+                  if "digraph" `isPrefixOf` dropWhile isSpace dotContents || "digraph" `elem` words dotContents
+                    then pure ()
+                    else fail ("hipGraphDebugDotPrint output does not look like DOT: " <> take 120 dotContents)
+                execGraph <- hipGraphInstantiate graph1
+                bracket_ (pure ()) (hipGraphExecDestroy execGraph) $ do
+                  updateInfo <- hipGraphExecUpdate execGraph graph2
+                  if hipGraphExecUpdateResult updateInfo /= HipGraphExecUpdateSuccess
+                    then fail ("hipGraphExecUpdate expected success, got=" <> show updateInfo)
+                    else pure ()
+                  hipGraphLaunch execGraph stream
+                  hipStreamSynchronize stream
+                  output <- peekArray bytesCount hOut
+                  if output == replicate bytesCount 0x44
+                    then pure SmokePassed
+                    else fail ("hip graph update/clone/debug-dot mismatch: expected all 0x44, got=" <> show output)
+
+hipGraphChildEventNodesSmoke :: IO SmokeResult
+hipGraphChildEventNodesSmoke = do
+  gpuReady <- requireGpu
+  case gpuReady of
+    Just skipMsg -> pure (SmokeSkipped skipMsg)
+    Nothing -> do
+      let bytesCount = 32 :: Int
+          bytes = fromIntegral bytesCount :: CSize
+          paramsFor dst value =
+            HipMemsetParams
+              { hipMemsetDst = dst
+              , hipMemsetElementSize = 1
+              , hipMemsetHeight = 1
+              , hipMemsetPitch = bytes
+              , hipMemsetValue = fromIntegral value
+              , hipMemsetWidth = bytes
+              }
+      tempDir <- getTemporaryDirectory
+      let dotDir = tempDir </> "haskell-rocm-graph-dot"
+          childDotPath = dotDir </> "hip_graph_child_graph.dot"
+      createDirectoryIfMissing True dotDir
+      bracket (mallocArray bytesCount :: IO (Ptr Word8)) free $ \hOut ->
+        bracket (hipMallocBytes bytes :: IO (DevicePtr Word8)) hipFree $ \dBuf ->
+          bracket hipStreamCreate hipStreamDestroy $ \stream ->
+            bracket hipStreamCreate hipStreamDestroy $ \readyStream ->
+              bracket hipEventCreate hipEventDestroy $ \readyEv1 ->
+                bracket hipEventCreate hipEventDestroy $ \readyEv2 ->
+                  bracket hipEventCreate hipEventDestroy $ \doneEv1 ->
+                    bracket hipEventCreate hipEventDestroy $ \doneEv2 -> do
+                      let DevicePtr pBuf = dBuf
+                      bracket (hipGraphCreate 0) hipGraphDestroy $ \childGraph ->
+                        bracket (hipGraphCreate 0) hipGraphDestroy $ \parentGraph -> do
+                          _ <- hipGraphAddMemsetNode childGraph [] (paramsFor (castPtr pBuf) (0x5a :: Word8))
+                          waitNode <- hipGraphAddEventWaitNode parentGraph [] readyEv1
+                          waitEv0 <- hipGraphEventWaitNodeGetEvent waitNode
+                          if waitEv0 /= readyEv1
+                            then fail "hipGraphEventWaitNodeGetEvent mismatch before set"
+                            else pure ()
+                          hipGraphEventWaitNodeSetEvent waitNode readyEv2
+                          childNode <- hipGraphAddChildGraphNode parentGraph [waitNode] childGraph
+                          embeddedGraph <- hipGraphChildGraphNodeGetGraph childNode
+                          hipGraphDebugDotPrint embeddedGraph childDotPath HipGraphDebugDotFlagsVerbose
+                          childDotExists <- doesFileExist childDotPath
+                          if not childDotExists
+                            then fail "hipGraphChildGraphNodeGetGraph returned an unusable graph handle"
+                            else pure ()
+                          recordNode <- hipGraphAddEventRecordNode parentGraph [childNode] doneEv1
+                          recordEv0 <- hipGraphEventRecordNodeGetEvent recordNode
+                          if recordEv0 /= doneEv1
+                            then fail "hipGraphEventRecordNodeGetEvent mismatch before set"
+                            else pure ()
+                          hipGraphEventRecordNodeSetEvent recordNode doneEv2
+                          _ <- hipGraphAddMemcpyNode1D parentGraph [recordNode] (castPtr hOut) (castPtr pBuf) bytes HipMemcpyDeviceToHost
+                          execGraph <- hipGraphInstantiate parentGraph
+                          bracket_ (pure ()) (hipGraphExecDestroy execGraph) $ do
+                            hipGraphExecEventWaitNodeSetEvent execGraph waitNode readyEv2
+                            hipGraphExecEventRecordNodeSetEvent execGraph recordNode doneEv2
+                            hipEventRecord readyEv2 readyStream
+                            hipGraphLaunch execGraph stream
+                            hipEventSynchronize doneEv2
+                            hipStreamSynchronize stream
+                            output <- peekArray bytesCount hOut
+                            if output == replicate bytesCount 0x5a
+                              then pure SmokePassed
+                              else fail ("hip graph child/event nodes mismatch: expected all 0x5a, got=" <> show output)
+
 normalizeHiprtcArch :: String -> String
 normalizeHiprtcArch = takeWhile (/= ':')
 
@@ -504,6 +1093,54 @@ hipModuleLaunchSource = unlines
   , "  if (i < n) out[i] = in[i] + 1.0f;"
   , "}"
   ]
+
+hipDirectAddOneSource :: String
+hipDirectAddOneSource = unlines
+  [ "#include <hip/hip_runtime.h>"
+  , "extern \"C\" __global__ void add_one(float* out, const float* in, int n) {"
+  , "  int i = blockIdx.x * blockDim.x + threadIdx.x;"
+  , "  if (i < n) out[i] = in[i] + 1.0f;"
+  , "}"
+  , "extern \"C\" void* add_one_kernel_address() {"
+  , "  return (void*)add_one;"
+  , "}"
+  ]
+
+requireHipcc :: IO (Maybe String)
+requireHipcc = do
+  mHipcc <- findExecutable "hipcc"
+  pure $ case mHipcc of
+    Nothing -> Just "hipcc not found in PATH; required for direct hipLaunchKernel / graph kernel-node coverage"
+    Just _ -> Nothing
+
+withDirectAddOneKernelAddress :: String -> (HipFunctionAddress -> IO a) -> IO a
+withDirectAddOneKernelAddress buildName action = do
+  tempDir <- getTemporaryDirectory
+  let buildDir = tempDir </> "haskell-rocm-hip-direct-kernels"
+      srcPath = buildDir </> (buildName <> ".hip")
+      soPath = buildDir </> ("lib" <> buildName <> ".so")
+  createDirectoryIfMissing True buildDir
+  writeFile srcPath hipDirectAddOneSource
+  mHipcc <- findExecutable "hipcc"
+  hipcc <- case mHipcc of
+    Just path -> pure path
+    Nothing -> fail "hipcc not found in PATH"
+  (exitCode, stdOut, stdErr) <- readProcessWithExitCode hipcc ["-shared", "-fPIC", "-O2", srcPath, "-o", soPath] ""
+  case exitCode of
+    ExitSuccess ->
+      bracket (dlopen soPath [RTLD_NOW, RTLD_LOCAL]) dlclose $ \dl -> do
+        getter <- dlsym dl "add_one_kernel_address" :: IO (FunPtr (IO (Ptr ())))
+        address <- HipFunctionAddress <$> mkKernelAddressGetter getter
+        action address
+    ExitFailure code ->
+      fail
+        ( "hipcc failed with exit code "
+            <> show code
+            <> " while building direct HIP kernel helper\nstdout:\n"
+            <> stdOut
+            <> "\nstderr:\n"
+            <> stdErr
+        )
 
 rocfftR2CC2RSmoke :: IO SmokeResult
 rocfftR2CC2RSmoke = do

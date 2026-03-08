@@ -15,8 +15,11 @@ test-suite smoke
 
   build-depends:
       base >=4.18 && <5
+    , directory
+    , filepath
     , process
     , rocm-ffi-core
+    , unix
     , rocm-hip-runtime
     , rocm-rocblas
     , rocm-rocfft
@@ -41,6 +44,7 @@ test-suite unit
 
   build-depends:
       base >=4.18 && <5
+    , rocm-ffi-core
     , rocm-hip-runtime
     , rocm-rocblas
     , rocm-rocfft

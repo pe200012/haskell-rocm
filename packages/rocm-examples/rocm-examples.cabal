@@ -578,3 +578,151 @@ executable hip-graph-memcpy
 
   default-language: GHC2021
   ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-launch-kernel-direct
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-launch-kernel-direct
+
+  build-depends:
+      base >=4.18 && <5
+    , directory
+    , filepath
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , unix
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-graph-kernel-node
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-graph-kernel-node
+
+  build-depends:
+      base >=4.18 && <5
+    , directory
+    , filepath
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , unix
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-launch-kernel-exc
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-launch-kernel-exc
+
+  build-depends:
+      base >=4.18 && <5
+    , directory
+    , filepath
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , unix
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-graph-host-node
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-graph-host-node
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-graph-memset-node
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-graph-memset-node
+
+  build-depends:
+      base >=4.18 && <5
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-graph-update-clone-debug-dot
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-graph-update-clone-debug-dot
+
+  build-depends:
+      base >=4.18 && <5
+    , directory
+    , filepath
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-graph-child-event-nodes
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-graph-child-event-nodes
+
+  build-depends:
+      base >=4.18 && <5
+    , directory
+    , filepath
+    , rocm-ffi-core
+    , rocm-hip-runtime
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-launch-kernel-exc-cooperative-attr
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-launch-kernel-exc-cooperative-attr
+
+  build-depends:
+      base >=4.18 && <5
+    , directory
+    , filepath
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , unix
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-stream-capture-graph
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-stream-capture-graph
+
+  build-depends:
+      base >=4.18 && <5
+    , directory
+    , filepath
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , unix
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
+executable hip-graph-kernel-node-cooperative-attr
+  main-is:          Main.hs
+  hs-source-dirs:   app/hip-graph-kernel-node-cooperative-attr
+
+  build-depends:
+      base >=4.18 && <5
+    , directory
+    , filepath
+    , process
+    , rocm-ffi-core
+    , rocm-hip-runtime
+    , unix
+
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N

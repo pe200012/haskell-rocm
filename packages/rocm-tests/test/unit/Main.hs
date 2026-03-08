@@ -2,23 +2,56 @@
 
 module Main (main) where
 
+import Data.Bits ((.&.), (.|.))
+
 import Control.Exception (SomeException, displayException, try)
 import Control.Monad (forM)
 import Foreign.C.String (peekCString)
+import Foreign.C.Types (CSize)
+import Foreign.Marshal.Alloc (alloca)
+import Foreign.Ptr (castPtrToFunPtr, intPtrToPtr, nullPtr)
+import Foreign.Storable (peek, poke)
 import System.Exit (exitFailure, exitSuccess)
 
 import HeaderConstants
 import RocRandHeaderConstants
+import ROCm.FFI.Core.Types (HipStream(..))
 import ROCm.HIP
   ( hipDriverGetVersion
   , hipGetLastError
   , hipPeekAtLastError
   , hipRuntimeGetVersion
   )
+import ROCm.HIP.GraphTypes
+  ( HipGraphInstantiateFlags(..)
+  , HipHostNodeParams(..)
+  , HipMemsetParams(..)
+  , pattern HipGraphExecUpdateSuccess
+  , pattern HipGraphInstantiateFlagAutoFreeOnLaunch
+  , pattern HipGraphInstantiateFlagDeviceLaunch
+  , pattern HipGraphInstantiateFlagUpload
+  , pattern HipGraphInstantiateFlagUseNodePriority
+  , pattern HipStreamCaptureModeGlobal
+  , pattern HipStreamCaptureModeRelaxed
+  , pattern HipStreamCaptureModeThreadLocal
+  , pattern HipStreamCaptureStatusActive
+  , pattern HipStreamCaptureStatusInvalidated
+  , pattern HipStreamCaptureStatusNone
+  )
+import ROCm.HIP.KernelNodeParams (HipKernelNodeParams(..))
+import ROCm.HIP.LaunchAttributes
+  ( HipLaunchAttribute(..)
+  , withHipLaunchAttributes
+  , hipLaunchAttributeCooperative
+  , hipLaunchAttributePriority
+  )
+import ROCm.HIP.LaunchConfig (HipLaunchConfig(..))
 import ROCm.HIP.RTC (hiprtcVersion)
 import ROCm.HIP.Raw (c_hipGetErrorString)
 import ROCm.HIP.Types
-  ( HipError(..)
+  ( HipDim3(..)
+  , HipError(..)
+  , HipFunctionAddress(..)
   , HipEventFlags(..)
   , HipEventRecordFlags(..)
   , HipHostMallocFlags(..)
@@ -144,6 +177,17 @@ main = do
       , ("hip-runtime-version", hipRuntimeVersionUnit)
       , ("hip-driver-version", hipDriverVersionUnit)
       , ("hiprtc-version", hiprtcVersionUnit)
+      , ("hip-launch-config-storable", hipLaunchConfigStorableUnit)
+      , ("hip-launch-attribute-cooperative-roundtrip", hipLaunchAttributeCooperativeRoundTripUnit)
+      , ("hip-launch-attribute-priority-roundtrip", hipLaunchAttributePriorityRoundTripUnit)
+      , ("hip-launch-attributes-empty-helper", hipLaunchAttributesEmptyHelperUnit)
+      , ("hip-host-node-params-storable", hipHostNodeParamsStorableUnit)
+      , ("hip-memset-node-params-storable", hipMemsetNodeParamsStorableUnit)
+      , ("hip-kernel-node-params-storable", hipKernelNodeParamsStorableUnit)
+      , ("hip-stream-capture-mode-patterns", hipStreamCaptureModePatternsUnit)
+      , ("hip-stream-capture-status-patterns", hipStreamCaptureStatusPatternsUnit)
+      , ("hip-graph-instantiate-flag-patterns", hipGraphInstantiateFlagPatternsUnit)
+      , ("hip-graph-update-result-pattern", hipGraphUpdateResultPatternUnit)
       , ("rocblas-status-string", rocblasStatusStringUnit)
       , ("rocfft-status-patterns", rocfftStatusPatternsUnit)
       , ("rocfft-type-patterns", rocfftTypePatternsUnit)
@@ -270,6 +314,117 @@ hiprtcVersionUnit = do
   if majorVersion >= 0 && minorVersion >= 0
     then pure ()
     else fail ("invalid HIPRTC version: " <> show (majorVersion, minorVersion))
+
+hipLaunchConfigStorableUnit :: IO ()
+hipLaunchConfigStorableUnit = do
+  let config =
+        HipLaunchConfig
+          { hipLaunchConfigGridDim = HipDim3 7 3 1
+          , hipLaunchConfigBlockDim = HipDim3 64 1 1
+          , hipLaunchConfigDynamicSmemBytes = 128 :: CSize
+          , hipLaunchConfigStream = Just (HipStream (intPtrToPtr 0x1234))
+          , hipLaunchConfigAttrs = intPtrToPtr 0x5678
+          , hipLaunchConfigNumAttrs = 0
+          }
+  alloca $ \pConfig -> do
+    poke pConfig config
+    roundTrip <- peek pConfig
+    expectEq "HipLaunchConfig round-trip" roundTrip config
+
+hipLaunchAttributeCooperativeRoundTripUnit :: IO ()
+hipLaunchAttributeCooperativeRoundTripUnit = do
+  let attr = hipLaunchAttributeCooperative True
+  alloca $ \pAttr -> do
+    poke pAttr attr
+    roundTrip <- peek pAttr
+    expectEq "HipLaunchAttribute cooperative round-trip" roundTrip attr
+
+hipLaunchAttributePriorityRoundTripUnit :: IO ()
+hipLaunchAttributePriorityRoundTripUnit = do
+  let attr = hipLaunchAttributePriority 7
+  alloca $ \pAttr -> do
+    poke pAttr attr
+    roundTrip <- peek pAttr
+    expectEq "HipLaunchAttribute priority round-trip" roundTrip attr
+
+hipLaunchAttributesEmptyHelperUnit :: IO ()
+hipLaunchAttributesEmptyHelperUnit =
+  withHipLaunchAttributes [] $ \pAttrs attrCount -> do
+    if pAttrs == nullPtr && attrCount == 0
+      then pure ()
+      else fail ("expected nullPtr/0 for empty launch attributes, got ptr=" <> show pAttrs <> ", count=" <> show attrCount)
+
+hipHostNodeParamsStorableUnit :: IO ()
+hipHostNodeParamsStorableUnit = do
+  let params =
+        HipHostNodeParams
+          { hipHostNodeFn = castPtrToFunPtr (intPtrToPtr 0x2345)
+          , hipHostNodeUserData = intPtrToPtr 0x3456
+          }
+  alloca $ \pParams -> do
+    poke pParams params
+    roundTrip <- peek pParams
+    expectEq "HipHostNodeParams round-trip" roundTrip params
+
+hipMemsetNodeParamsStorableUnit :: IO ()
+hipMemsetNodeParamsStorableUnit = do
+  let params =
+        HipMemsetParams
+          { hipMemsetDst = intPtrToPtr 0x4567
+          , hipMemsetElementSize = 1
+          , hipMemsetHeight = 1
+          , hipMemsetPitch = 16
+          , hipMemsetValue = 0x7f
+          , hipMemsetWidth = 16
+          }
+  alloca $ \pParams -> do
+    poke pParams params
+    roundTrip <- peek pParams
+    expectEq "HipMemsetParams round-trip" roundTrip params
+
+hipKernelNodeParamsStorableUnit :: IO ()
+hipKernelNodeParamsStorableUnit = do
+  let params =
+        HipKernelNodeParams
+          { hipKernelNodeBlockDim = HipDim3 7 8 9
+          , hipKernelNodeExtra = intPtrToPtr 0x11
+          , hipKernelNodeFunc = HipFunctionAddress (intPtrToPtr 0x22)
+          , hipKernelNodeGridDim = HipDim3 3 4 5
+          , hipKernelNodeKernelParams = intPtrToPtr 0x33
+          , hipKernelNodeSharedMemBytes = 64
+          }
+  alloca $ \pParams -> do
+    poke pParams params
+    roundTrip <- peek pParams
+    expectEq "HipKernelNodeParams round-trip" roundTrip params
+    if hipKernelNodeExtra roundTrip == nullPtr || hipKernelNodeKernelParams roundTrip == nullPtr
+      then fail "HipKernelNodeParams pointer fields unexpectedly became null"
+      else pure ()
+
+hipStreamCaptureModePatternsUnit :: IO ()
+hipStreamCaptureModePatternsUnit = do
+  let modes = [HipStreamCaptureModeGlobal, HipStreamCaptureModeThreadLocal, HipStreamCaptureModeRelaxed]
+  if length modes == length (foldr (\x acc -> if x `elem` acc then acc else x : acc) [] modes)
+    then pure ()
+    else fail ("expected distinct stream capture modes, got=" <> show modes)
+
+hipStreamCaptureStatusPatternsUnit :: IO ()
+hipStreamCaptureStatusPatternsUnit = do
+  let statuses = [HipStreamCaptureStatusNone, HipStreamCaptureStatusActive, HipStreamCaptureStatusInvalidated]
+  if length statuses == length (foldr (\x acc -> if x `elem` acc then acc else x : acc) [] statuses)
+    then pure ()
+    else fail ("expected distinct stream capture statuses, got=" <> show statuses)
+
+hipGraphInstantiateFlagPatternsUnit :: IO ()
+hipGraphInstantiateFlagPatternsUnit = do
+  let flags = HipGraphInstantiateFlagUpload .|. HipGraphInstantiateFlagUseNodePriority
+  if flags /= HipGraphInstantiateFlags 0 && (flags .&. HipGraphInstantiateFlagUpload) == HipGraphInstantiateFlagUpload
+    then pure ()
+    else fail ("unexpected graph instantiate flag combination: " <> show flags)
+
+hipGraphUpdateResultPatternUnit :: IO ()
+hipGraphUpdateResultPatternUnit =
+  expectEq "HipGraphExecUpdateSuccess" HipGraphExecUpdateSuccess HipGraphExecUpdateSuccess
 
 rocblasStatusStringUnit :: IO ()
 rocblasStatusStringUnit = do
